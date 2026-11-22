@@ -37,7 +37,12 @@ window.CCMP_SETTINGS = {
 	gameVersion: 2.058,            // VERSION from orteil.dashnet.org/cookieclicker/index.html
 	mainJsVersion: '13h',          // ?v= of main.js on the official page
 	cssVersion: '10c',             // ?v= of style.css on the official page
-	jneUrl: 'https://cdn.jsdelivr.net/gh/dfsw/Just-Natural-Expansion@main/JustNaturalExpansion.js'
+	jneUrl: 'https://cdn.jsdelivr.net/gh/dfsw/Just-Natural-Expansion@main/JustNaturalExpansion.js',
+	// Heralds (+1% CpS each, needs the "Heralds" heavenly upgrade) come from the number of
+	// Steam players. dashnet.org doesn't let other websites read that number directly, so the
+	// page tries a few public relays; if none answer, the room uses its last known number,
+	// or this one. Set it to 0 to play without heralds.
+	fallbackHeralds: 80
 };
 </script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -397,7 +402,7 @@ function P(sub){return 'rooms/'+R.code+(sub?'/'+sub:'');}
 
 async function enterRoom(code,roomName,playerName,fresh){
 	R={code:code,name:roomName,player:playerName,fresh:fresh,
-		isHost:false,ready:false,loading:false,remote:0,depth:0,pd:0,capD:0,capT:0,
+		isHost:false,ready:false,loading:false,remote:0,depth:0,pd:0,capD:0,capT:0,heraldTry:0,
 		seq:0,applied:{},log:[],loadedRev:0,simple:0,dirty:false,lastPublish:0,lastAutosave:0,
 		clk:0,hand:0,mismatch:0,waitFresh:false,waitFreshAt:0,waitFreshFrom:0,pendingLoad:false,
 		players:{},joinT:DB.now(),hostPid:null,unsub:[],
@@ -1233,6 +1238,44 @@ function worldFp(){
 }
 
 /* ====================================================================
+   Heralds: the ★ player looks up the Steam player count and shares it,
+   so everyone has the same CpS
+   ==================================================================== */
+var HERALD_SRC='https://orteil.dashnet.org/data/cookieclickersteam.json';
+function setHeralds(h){
+	h=Math.max(0,Math.min(100,+h||0));
+	Game.heralds=h; Game.externalDataLoaded=true; Game.recalculateGains=1;
+	try{$('heraldsAmount').textContent=Math.floor(h);}catch(e){}
+}
+async function initHeralds(){
+	var m=null; try{m=await DB.get(P('meta'));}catch(e){}
+	setHeralds(m && typeof m.heralds==='number'?m.heralds:(SET.fallbackHeralds||0));
+}
+function getJsonTimeout(url,ms){
+	return new Promise(function(res,rej){
+		var x=new XMLHttpRequest(), done=false;
+		var t=later(function(){if(!done){done=true;try{x.abort();}catch(e){}rej(new Error('timeout'));}},ms);
+		x.onload=function(){if(done)return;done=true;clearTimeout(t);try{res(JSON.parse(x.responseText));}catch(e){rej(e);}};
+		x.onerror=function(){if(done)return;done=true;clearTimeout(t);rej(new Error('blocked'));};
+		x.open('GET',url); x.send();
+	});
+}
+async function fetchHeralds(){
+	var tries=[HERALD_SRC,'https://api.allorigins.win/raw?url='+encodeURIComponent(HERALD_SRC),'https://api.codetabs.com/v1/proxy?quest='+encodeURIComponent(HERALD_SRC)];
+	for (var i=0;i<tries.length;i++){
+		try{
+			var r=await getJsonTimeout(tries[i],8000);
+			var n=parseInt(r&&r.steamPlayers);
+			if (n>0){
+				var h=Math.max(0,Math.min(100,Math.ceil(n/100*100)/100));
+				if (R.isHost){setHeralds(h);DB.update(P('meta'),{heralds:h,heraldsT:DB.now()});}
+				return;
+			}
+		}catch(e){}
+	}
+}
+
+/* ====================================================================
    Sync loops
    ==================================================================== */
 function startSync(){
@@ -1257,6 +1300,7 @@ function startSync(){
 		else later(function(){publishSave(false,'request');},1600);
 	}));
 
+	initHeralds();
 	setInterval(tick,300);
 	setInterval(hostElection,3000);
 	hostElection();
@@ -1281,13 +1325,14 @@ async function loadLatestAny(){var s=await DB.get(P('save'));if(s&&s.rev>R.loade
 var lastLive=0,lastClean=0;
 function hostTick(){
 	var now=Date.now();
+	if (now-R.heraldTry>600000){R.heraldTry=now;fetchHeralds();}
 	if (ascending()) return;
 	if (now-lastLive>2000){
 		lastLive=now;
 		DB.set(P('live'),{by:PID,t:DB.now(),vec:R.applied,c:Game.cookies,e:Game.cookiesEarned,
 			b:Game.ObjectsById.map(function(o){return o.amount;}).join(','),
 			u:Game.UpgradesOwned,a:Game.AchievementsOwned,r:Game.resets,s:Game.season,l:Math.floor(Game.lumps),
-			w:worldFp(),wr:wrinklerState()});
+			w:worldFp(),wr:wrinklerState(),h:Game.heralds});
 	}
 	if (now-R.lastPublish>30000){publishSave(false,'autosave');DB.update(P('meta'),{t:DB.now()});}
 	if (now-lastClean>60000){
@@ -1307,6 +1352,7 @@ function sameVec(a,b){
 }
 function onLive(L){
 	if (!L || !R.ready || R.isHost || R.loading || L.by===PID || ascending()) return;
+	if (typeof L.h==='number' && (L.h!==Game.heralds || !Game.externalDataLoaded)) setHeralds(L.h);
 	applyWrinklers(L.wr);
 	if (!sameVec(L.vec,R.applied)){R.mismatch=0;return;} // actions still on their way
 	if (L.w && L.w!==worldFp()){
