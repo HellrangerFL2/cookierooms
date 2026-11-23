@@ -5,16 +5,32 @@
 <!--
   Cookie Clicker + Just Natural Expansion — multiplayer rooms
   ------------------------------------------------------------
-  The game itself is NOT copied here: it is loaded live from Orteil's servers
-  (cdn.dashnet.org) and JNE from jsDelivr, every time the page opens.
+  The game and the mod are not stored in this repository. A GitHub Actions
+  workflow (.github/workflows/build-site.yml) downloads them into the "game"
+  folder of the published site, so the page works on networks that block
+  dashnet.org or jsDelivr. Without that folder, everything is loaded live
+  from cdn.dashnet.org and jsDelivr instead.
   Cookie Clicker (c) Orteil / DashNet. Just Natural Expansion (c) its authors.
 
-  All relative URLs on this page resolve to the official game folder (see <base>).
+  All relative URLs on this page resolve to the game folder (see <base>).
 -->
-<base href="https://cdn.dashnet.org/cookieclicker/">
+<script>
+/* use the copy of the game on this site if the workflow made one */
+(function(){
+	var info=null;
+	try{
+		var x=new XMLHttpRequest();
+		x.open('GET','game/ccmp-files.json?t='+Date.now(),false);
+		x.send();
+		if (x.status===200) info=JSON.parse(x.responseText);
+	}catch(e){}
+	window.CCMP_FILES=info;
+	document.write('<base href="'+(info?'game/':'https://cdn.dashnet.org/cookieclicker/')+'">');
+})();
+</script>
 <meta name="viewport" content="width=900, initial-scale=1">
 <title>Cookie Clicker Rooms</title>
-<link rel="icon" href="https://cdn.dashnet.org/cookieclicker/img/favicon.ico">
+<link rel="icon" href="img/favicon.ico">
 
 <script>
 /* =====================================================================
@@ -45,9 +61,17 @@ window.CCMP_SETTINGS = {
 	// used only if that file can't be read and the room has never had a number yet; 0 = no heralds
 	fallbackHeralds: 80
 };
+(function(){
+	var S=window.CCMP_SETTINGS, F=window.CCMP_FILES;
+	if (F){ // everything from this site's own copy
+		if (F.version) S.gameVersion=+F.version;
+		S.mainJsVersion=S.cssVersion=F.built||'local';
+		S.jneUrl='jne/JustNaturalExpansion.js';
+	}
+	var fb=F?'lib/':'https://www.gstatic.com/firebasejs/10.12.2/';
+	document.write('<script src="'+fb+'firebase-app-compat.js"><\/script><script src="'+fb+'firebase-database-compat.js"><\/script>');
+})();
 </script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 
 <style>
 #ccmp-lobby{position:fixed;inset:0;overflow:auto;background:#0d0a08 radial-gradient(ellipse at top,#3b2414 0%,#120c08 55%,#070504 100%);color:#f3e6d3;font:15px/1.45 Georgia,'Times New Roman',serif;z-index:5;}
@@ -258,6 +282,9 @@ if (hashCode) codeInput.value=hashCode;
 $('ccmp-status').innerHTML = DB.kind==='firebase'
 	? 'Server: <b class="ok">online rooms (Firebase)</b>'
 	: 'Server: <b class="warn">local test mode</b> &ndash; no Firebase config yet, so rooms only work between tabs of this browser. Add your Firebase config at the top of index.html to play with friends.';
+$('ccmp-status').innerHTML += '<br>Game files: '+(window.CCMP_FILES
+	? '<b class="ok">from this site</b> (Cookie Clicker '+esc(window.CCMP_FILES.version||'?')+', JNE '+esc(window.CCMP_FILES.jne||'?')+', updated '+esc(String(window.CCMP_FILES.built||'').slice(0,10))+')'
+	: '<b class="warn">from dashnet.org and jsDelivr</b> &ndash; the build workflow hasn\'t made a copy on this site yet, so this won\'t work where those sites are blocked.');
 
 function recentRooms(){try{return JSON.parse(lsGet('ccmp-recent')||'[]');}catch(e){return [];}}
 function addRecent(code,name){var r=recentRooms().filter(function(x){return x.code!==code;});r.unshift({code:code,name:name||'',t:Date.now()});lsSet('ccmp-recent',JSON.stringify(r.slice(0,8)));}
@@ -1334,6 +1361,7 @@ function getJsonTimeout(url,ms){
 async function fetchHeralds(){
 	var tries=[];
 	if (SET.heraldsUrl) tries.push(SET.heraldsUrl+(SET.heraldsUrl.indexOf('?')<0?'?':'&')+'t='+Date.now());
+	if (window.CCMP_FILES) tries.push('heralds.json?t='+Date.now()); // the copy made by the build (up to a day old)
 	tries.push(HERALD_SRC,'https://api.allorigins.win/raw?url='+encodeURIComponent(HERALD_SRC),'https://api.codetabs.com/v1/proxy?quest='+encodeURIComponent(HERALD_SRC));
 	for (var i=0;i<tries.length;i++){
 		try{
@@ -1559,4 +1587,3 @@ else if (!nameInput.value) nameInput.focus();
 </script>
 </body>
 </html>
-	
