@@ -1,0 +1,110 @@
+# Builds the GitHub Pages site with its own copy of Cookie Clicker and
+# Just Natural Expansion, so the page doesn't need dashnet.org or jsDelivr
+# (which some networks block). Runs on every change, once a day for updates,
+# and when started by hand (Actions tab -> Build site -> Run workflow).
+#
+# Needs: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+name: Build site
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy the room page
+        run: |
+          mkdir -p _site
+          tar --exclude=./.git --exclude=./.github --exclude=./_site -cf - . | tar -xf - -C _site
+
+      - name: Download Cookie Clicker
+        run: |
+          set -euo pipefail
+          G=_site/game
+          mkdir -p "$G"
+          # every file of the game (images, sounds, translations) from a GitHub mirror
+          curl -fsSL https://github.com/ozh/cookieclicker/archive/refs/heads/gh-pages.tar.gz | tar -xz -C "$G" --strip-components=1
+          rm -f "$G/index.html" "$G/showads.js"
+          # then the newest code straight from the official site
+          LIVE=https://orteil.dashnet.org/cookieclicker
+          VER=""
+          if curl -fsSL "$LIVE/" -o /tmp/live.html; then
+            VER=$(grep -oE "VERSION *= *[0-9.]+" /tmp/live.html | head -1 | grep -oE "[0-9.]+$" || true)
+            (cd "$G" && find . -type f \( -name '*.js' -o -name '*.css' \) -printf '%P\n') | while read -r f; do
+              curl -fsSL "$LIVE/$f" -o "$G/$f.new" && mv "$G/$f.new" "$G/$f" || rm -f "$G/$f.new"
+            done
+            # pictures and sounds added in newer versions
+            { grep -ohE "(img|snd)/[A-Za-z0-9_./-]+\.(png|jpg|gif|mp3|ogg)" "$G"/*.js || true; } | sort -u | while read -r f; do
+              if [ ! -f "$G/$f" ]; then
+                mkdir -p "$G/$(dirname "$f")"
+                curl -fsSL "https://cdn.dashnet.org/cookieclicker/$f" -o "$G/$f" || rm -f "$G/$f"
+              fi
+            done
+          else
+            echo "::warning::orteil.dashnet.org couldn't be reached; using the mirror's version of the game"
+          fi
+          if [ -z "$VER" ]; then
+            VER=$(curl -fsSL https://raw.githubusercontent.com/ozh/cookieclicker/gh-pages/index.html | grep -oE "VERSION *= *[0-9.]+" | head -1 | grep -oE "[0-9.]+$" || true)
+          fi
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          test -f "$G/main.js"
+
+      - name: Download Just Natural Expansion
+        run: |
+          set -euo pipefail
+          J=_site/game/jne
+          mkdir -p "$J/cookies"
+          curl -fsSL https://github.com/dfsw/Just-Natural-Expansion/archive/refs/heads/main.tar.gz | tar -xz -C "$J" --strip-components=1
+          curl -fsSL https://raw.githubusercontent.com/dfsw/Cookies/main/cookieAge.js -o "$J/cookies/cookieAge.js"
+          # point the mod's own links at these copies (paths are relative to the game folder)
+          find "$J" -name '*.js' -print0 | xargs -0 sed -i -E \
+            -e 's#https://cdn\.jsdelivr\.net/gh/dfsw/Just-Natural-Expansion@[A-Za-z0-9._-]+/#jne/#g' \
+            -e 's#https://raw\.githubusercontent\.com/dfsw/Just-Natural-Expansion/(refs/heads/)?[A-Za-z0-9._-]+/#jne/#g' \
+            -e 's#https://cdn\.jsdelivr\.net/gh/dfsw/Cookies@main/cookieAge\.js#jne/cookies/cookieAge.js#g' \
+            -e 's#https://raw\.githubusercontent\.com/dfsw/Cookies/(refs/heads/)?main/cookieAge\.js#jne/cookies/cookieAge.js#g' \
+            -e 's#https?://(orteil|cdn)\.dashnet\.org/cookieclicker/##g'
+          JNEVER=$(grep -oE "modVersion *= *'[^']+'" "$J/JustNaturalExpansion.js" | head -1 | grep -oE "'[^']+'" | tr -d "'" || true)
+          echo "JNEVER=$JNEVER" >> "$GITHUB_ENV"
+          test -f "$J/JustNaturalExpansion.js"
+
+      - name: Download the Firebase library
+        run: |
+          set -euo pipefail
+          mkdir -p _site/game/lib
+          for f in firebase-app-compat.js firebase-database-compat.js; do
+            curl -fsSL "https://www.gstatic.com/firebasejs/10.12.2/$f" -o "_site/game/lib/$f"
+          done
+          # a copy of the heralds number, for networks that block raw.githubusercontent.com
+          curl -fsSL https://raw.githubusercontent.com/HellrangerFL2/heralds/data/heralds.json -o _site/game/heralds.json || rm -f _site/game/heralds.json
+          printf '{"version":"%s","jne":"%s","built":"%s"}\n' "$VER" "$JNEVER" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > _site/game/ccmp-files.json
+          cat _site/game/ccmp-files.json
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
