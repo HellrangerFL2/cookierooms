@@ -440,7 +440,7 @@ function P(sub){return 'rooms/'+R.code+(sub?'/'+sub:'');}
 
 async function enterRoom(code,roomName,playerName,fresh){
 	R={code:code,name:roomName,player:playerName,fresh:fresh,
-		isHost:false,ready:false,loading:false,remote:0,depth:0,pd:0,capD:0,capT:0,heraldTry:0,
+		isHost:false,ready:false,loading:false,remote:0,depth:0,pd:0,capD:0,capT:0,clickC:0,clickE:0,clickH:0,bc:null,heraldTry:0,
 		seq:0,applied:{},log:[],loadedRev:0,simple:0,dirty:false,lastPublish:0,lastAutosave:0,
 		clk:0,hand:0,mismatch:0,waitFresh:false,waitFreshAt:0,waitFreshFrom:0,pendingLoad:false,
 		players:{},joinT:DB.now(),hostPid:null,unsub:[],
@@ -701,6 +701,7 @@ function requestFresh(){
    everything else re-shares the whole save)
    ==================================================================== */
 function send(a){
+	if (a.k!=='c') sendClicks();
 	R.seq++;
 	a.p=PID; a.s=R.seq; a.t=DB.now(); a.n_=R.player;
 	R.applied[PID]=R.seq;
@@ -713,7 +714,24 @@ function sendClicks(){
 	if (!R || !R.ready) return;
 	var dc=Game.cookieClicks-R.clk, dh=Game.handmadeCookies-R.hand;
 	R.clk=Game.cookieClicks; R.hand=Game.handmadeCookies;
-	if (dc>0 && dh>=0) send({k:'c',n:dc,a:dh});
+	var a={k:'c',n:Math.max(0,dc),a:Math.max(0,dh)};
+	// everything the big cookie clicks changed in the bank, extras from JNE etc. included
+	if (R.clickC||R.clickE){a.c=R.clickC;a.e=R.clickE;a.h=R.clickH;}
+	R.clickC=R.clickE=R.clickH=0;
+	if (dc>0 || a.c || a.e) send(a);
+}
+// a big cookie click is measured from just before the game handles it to just after
+function bcStart(e){
+	if (!R || !R.ready || R.loading || R.bc) return;
+	var t=e.target;
+	if (!(t && t.closest && t.closest('#bigCookie'))) return;
+	R.bc={c:Game.cookies,e:Game.cookiesEarned,h:Game.handmadeCookies};
+	later(bcEnd,0);
+}
+function bcEnd(){
+	var b=R&&R.bc; if (!b) return;
+	R.bc=null;
+	R.clickC+=Game.cookies-b.c; R.clickE+=Game.cookiesEarned-b.e; R.clickH+=Game.handmadeCookies-b.h;
 }
 
 function applyAction(a){
@@ -724,20 +742,34 @@ function applyAction(a){
 		switch(a.k){
 			case 'c':
 				if (asc) break;
-				Game.Earn(a.a); Game.handmadeCookies+=a.a; Game.cookieClicks+=a.n;
+				var other=a.a-(a.h||0); // clicks not measured one by one (another script...): their handmade cookies
+				Game.cookies+=(a.c||0)+other; Game.cookiesEarned+=(a.e||0)+other;
+				Game.handmadeCookies+=a.a; Game.cookieClicks+=a.n;
 				R.clk+=a.n; R.hand+=a.a;
 				break;
 			case 'b':
 				if (asc) break;
 				me=Game.ObjectsById[a.id]; if (!me) break;
-				if (a.d>0){var bm=Game.buyMode;Game.buyMode=1;me.buy(a.d);Game.buyMode=bm;}
+				if (a.d>0){
+					// the buyer already paid: the bank here may be a little behind (clicks or
+					// production on their way), so the purchase must not fail for lack of cookies
+					var bm=Game.buyMode, c0=Game.cookies, paid=(typeof a.m==='number'&&a.m>=0)?a.m:null;
+					var need=me.getSumPrice?me.getSumPrice(a.d):0;
+					Game.cookies=Math.max(c0,need*1.01+1,(paid||0)*1.01+1);
+					Game.buyMode=1;
+					try{me.buy(a.d);}
+					finally{Game.buyMode=bm;Game.cookies=Math.max(0,c0-(paid!==null?paid:need));}
+				}
 				else me.sell(-a.d,1);
 				break;
 			case 'u':
 				if (asc) break;
 				me=Game.UpgradesById[a.id]; if (!me || me.bought) break;
-				me.unlocked=1; me.buy(1);
-				if (!me.bought){Game.Spend(Math.min(Game.cookies,me.getPrice()));me.earn();}
+				var uc0=Game.cookies, upaid=(typeof a.m==='number'&&a.m>=0)?a.m:null, uprice=me.getPrice();
+				me.unlocked=1;
+				Game.cookies=Math.max(uc0,uprice*1.01+1,(upaid||0)*1.01+1);
+				try{me.buy(1);if(!me.bought)me.earn();}
+				finally{Game.cookies=Math.max(0,uc0-(upaid!==null?upaid:uprice));}
 				break;
 			case 'hu':
 				me=Game.UpgradesById[a.id]; if (!me || me.bought) break;
@@ -782,21 +814,25 @@ function installHooks(){
 			var orig=me[fn];
 			me[fn]=function(){
 				if (R.remote || R.depth) return orig.apply(this,arguments);
-				var before=this.amount;
+				var before=this.amount, cb=Game.cookies;
 				R.depth++;
 				try{return orig.apply(this,arguments);}
-				finally{R.depth--;var d=this.amount-before;if(d&&R.ready)send({k:'b',id:this.id,d:d});}
+				finally{
+					R.depth--;
+					var d=this.amount-before;
+					if (d&&R.ready){var act={k:'b',id:this.id,d:d};if(d>0)act.m=cb-Game.cookies;send(act);}
+				}
 			};
 		});
 	});
 	// upgrades (normal + heavenly)
 	var ub=Game.Upgrade.prototype.buy;
 	Game.Upgrade.prototype.buy=function(){
-		var was=this.bought;
+		var was=this.bought, cb=Game.cookies;
 		var r=ub.apply(this,arguments);
 		if (!R.remote && R.ready && !was && this.bought){
 			if (this.pool==='prestige') send({k:'hu',id:this.id});
-			else if (this.priceLumps<=0) send({k:'u',id:this.id});
+			else if (this.priceLumps<=0) send({k:'u',id:this.id,m:cb-Game.cookies});
 		}
 		return r;
 	};
@@ -836,6 +872,10 @@ function installHooks(){
 		window.addEventListener(type,winEnd,false);      // runs after them
 	});
 	document.addEventListener('keydown',onResyncKey,false);
+	['click','touchend'].forEach(function(type){
+		document.addEventListener(type,bcStart,true);
+		window.addEventListener(type,bcEnd,false);
+	});
 	document.addEventListener('mousedown',function(){R.mouseDown=true;},true);
 	window.addEventListener('mouseup',function(){R.mouseDown=false;},true);
 	window.addEventListener('pagehide',function(){if(R.isHost)publishSave(false,'leave');});
