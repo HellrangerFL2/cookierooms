@@ -816,6 +816,7 @@ function installHooks(){
 	installShimmerSync();
 	installWrinklerSync();
 	installDelayedCapture();
+	installAchievementHints();
 	if (Game.loseShimmeringVeil){
 		var lsv=Game.loseShimmeringVeil;
 		Game.loseShimmeringVeil=function(){
@@ -832,6 +833,21 @@ function installHooks(){
 	document.addEventListener('mousedown',function(){R.mouseDown=true;},true);
 	window.addEventListener('mouseup',function(){R.mouseDown=false;},true);
 	window.addEventListener('pagehide',function(){if(R.isHost)publishSave(false,'leave');});
+}
+
+/* Locked achievements keep their "?" icon, "???" name and "Locked" tag, but the tooltip
+   says what unlocks them (the description without its joke quote). */
+function installAchievementHints(){
+	var ct=Game.crateTooltip;
+	Game.crateTooltip=function(me,context){
+		var html=ct.apply(this,arguments);
+		if (!me || me.type!=='achievement' || me.won) return html;
+		var desc=me.ddesc||me.desc||'';
+		try{if (me.descFunc) desc=me.descFunc(context);}catch(e){}
+		desc=String(desc).replace(/<q>[\s\S]*?<\/q>/gi,'').replace(/(\s|<br\s*\/?>|<div class="line"><\/div>)+$/i,'').trim();
+		if (!desc) return html;
+		return html.replace('<div class="description">???</div>',function(){return '<div class="description">'+desc+'</div>';});
+	};
 }
 
 /* ====================================================================
