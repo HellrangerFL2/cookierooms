@@ -39,13 +39,11 @@
       between tabs of the same browser).
    ===================================================================== */
 window.CCMP_FIREBASE_CONFIG = {
-	apiKey: "AIzaSyCi_lmKXtSsfBugXC_TiQI5fFNHuJO0b7c",
-	authDomain: "cookier-faf44.firebaseapp.com",
-	databaseURL: "https://cookier-faf44-default-rtdb.europe-west1.firebasedatabase.app",
-	projectId: "cookier-faf44",
-	storageBucket: "cookier-faf44.firebasestorage.app",
-	messagingSenderId: "41959419925",
-	appId: "1:41959419925:web:cb6f71db82d75fd4a95e1c"
+	apiKey: "",
+	authDomain: "",
+	databaseURL: "",
+	projectId: "",
+	appId: ""
 };
 
 /* 2) Game settings (normally no need to touch) */
@@ -444,10 +442,15 @@ async function enterRoom(code,roomName,playerName,fresh){
 
 	// presence
 	var me=P('players/'+PID);
-	await DB.set(me,{name:playerName,t:DB.now(),joined:DB.now(),v:!document.hidden});
+	await DB.set(me,{name:playerName,t:DB.now(),joined:DB.now(),v:!document.hidden,hs:document.hidden?DB.now():0});
 	DB.onDisconnectRemove(me);
-	setInterval(function(){DB.update(me,{t:DB.now(),name:playerName,v:!document.hidden});},10000);
-	document.addEventListener('visibilitychange',function(){DB.update(me,{t:DB.now(),v:!document.hidden});if(R.ready)hostElection();});
+	R.hiddenSince=document.hidden?DB.now():0;
+	var presence=function(){return {t:DB.now(),name:playerName,v:!document.hidden,hs:R.hiddenSince||0};};
+	setInterval(function(){DB.update(me,presence());},10000);
+	document.addEventListener('visibilitychange',function(){
+		R.hiddenSince=document.hidden?(R.hiddenSince||DB.now()):0;
+		DB.update(me,presence());
+	});
 
 	// get the room's save (or wait for the creator to finish setting it up)
 	var save=null;
@@ -625,6 +628,7 @@ function applySave(save){
 	R.loadedRev=save.rev||R.loadedRev;
 	R.waitFresh=false; R.mismatch=0; R.wMis=0; R.lastLoadAt=Date.now();
 	R.loading=false;
+	if (R.resyncing){R.resyncing=false;sys('Resynced.');try{Game.Notify('Resynced','Your bakery now matches the &#9733; player.','',3);}catch(e){}}
 }
 
 async function publishSave(force,why){
@@ -652,6 +656,28 @@ async function loadLatest(){
 	if (s && s.rev>R.loadedRev && s.by!==PID) applySave(s);
 }
 
+/* Alt+P (or the Resync button): a full resync. Everyone else asks the ★ player for a fresh copy of
+   the bakery; the ★ player sends its own bakery to everyone. */
+function onResyncKey(e){
+	// Alt only (Ctrl+Alt is AltGr on many keyboards); the key's position, since Alt+P types π on a Mac
+	if (!R || !R.ready || e.repeat || !e.altKey || e.ctrlKey || e.metaKey || e.code!=='KeyP') return;
+	e.preventDefault();
+	resync();
+}
+function resync(){
+	if (ascending()){sys('You can resync once the ascension is over.');return;}
+	if (Date.now()-(R.lastResync||0)<5000) return;
+	R.lastResync=Date.now();
+	if (R.isHost){
+		sys('Resync: sending your bakery to everyone.');
+		publishSave(true,'resync').then(function(){try{Game.Notify('Resynced','Everyone now has your bakery.','',3);}catch(e){}});
+	}else{
+		sys('Resync: getting a fresh copy from the &#9733; player…');
+		R.resyncing=true;
+		R.waitFresh=false; // ask again even if a request is already waiting
+		requestFresh();
+	}
+}
 function requestFresh(){
 	if (R.waitFresh && Date.now()-R.waitFreshAt<8000) return;
 	R.waitFresh=true; R.waitFreshAt=Date.now(); R.waitFreshFrom=DB.now()-1500;
@@ -796,6 +822,7 @@ function installHooks(){
 		document.addEventListener(type,winStart,true);   // runs before the game's own handlers
 		window.addEventListener(type,winEnd,false);      // runs after them
 	});
+	document.addEventListener('keydown',onResyncKey,false);
 	document.addEventListener('mousedown',function(){R.mouseDown=true;},true);
 	window.addEventListener('mouseup',function(){R.mouseDown=false;},true);
 	window.addEventListener('pagehide',function(){if(R.isHost)publishSave(false,'leave');});
@@ -930,19 +957,23 @@ function keepPanel(b,open){
 	fix(); later(fix,150);
 }
 function snap(){
-	var s={a:{},v:{},b:[],mg:{},u:[],ach:[],buf:{},jne:''};
-	SCAL_ADD.forEach(function(k){s.a[k]=+Game[k]||0;});
-	SCAL_SET.forEach(function(k){s.v[k]=Game[k];});
-	Game.ObjectsById.forEach(function(b){s.b.push([b.amount,b.level]);});
+	var s={a:{},v:{},b:[],mg:{},u:'',ach:'',buf:{},jraw:''}, i, k;
+	for (i=0;i<SCAL_ADD.length;i++){k=SCAL_ADD[i];s.a[k]=+Game[k]||0;}
+	for (i=0;i<SCAL_SET.length;i++){k=SCAL_SET[i];s.v[k]=Game[k];}
+	var O=Game.ObjectsById;
+	for (i=0;i<O.length;i++) s.b.push([O[i].amount,O[i].level]);
 	withPanelsClosed(function(){Game.ObjectsById.forEach(function(b){var m=mgGet(b);if(m!==null)s.mg[b.id]=m;});});
 	var ca=caGet(); if (ca!==null) s.mg.ca=ca;
 	s.hand=+Game.handmadeCookies||0;
-	for (var i in Game.UpgradesById){var u=Game.UpgradesById[i];if(u)s.u.push([u.id,(u.unlocked?1:0)+(u.bought?2:0)]);}
-	for (var j in Game.AchievementsById){var a=Game.AchievementsById[j];if(a&&a.won)s.ach.push(a.name);}
+	// one digit per upgrade (unlocked +1, bought +2) and per achievement (won), by id
+	var U=Game.UpgradesById, us='';
+	for (i=0,k=Math.max(Game.UpgradesN||0,0);i<k;i++){var u=U[i];us+=u?(u.unlocked?1:0)+(u.bought?2:0):0;}
+	s.u=us;
+	var A=Game.AchievementsById, as='';
+	for (i=0,k=Math.max(Game.AchievementsN||0,0);i<k;i++) as+=(A[i]&&A[i].won)?1:0;
+	s.ach=as;
 	for (var n in Game.buffs){var f=Game.buffs[n];s.buf[n]=[f.type&&f.type.name,f.maxTime,f.time,f.arg1,f.arg2,f.arg3];}
-	s.jo={};
-	var ms=window.modSettings;
-	if (ms) for (var key in ms){if(JNE_PERSONAL.indexOf(key)===-1){try{s.jo[key]=JSON.stringify(ms[key]);}catch(e){}}}
+	try{s.jraw=window.modSettings?JSON.stringify(window.modSettings):'';}catch(e){}
 	return s;
 }
 function diff(s0,s1){
@@ -956,13 +987,18 @@ function diff(s0,s1){
 		if (m0===undefined){(p.mg=p.mg||{})[k]={n:m1};n++;continue;}
 		if (m1!==m0 && (ints(m1)!==ints(m0) || skel(toks(m1))!==skel(toks(m0)))){(p.mg=p.mg||{})[k]=mgDiff(m0,m1,Game.ObjectsById[k]&&MG_SUM[Game.ObjectsById[k].name]);n++;}
 	}
-	var u0={};s0.u.forEach(function(x){u0[x[0]]=x[1];});
-	s1.u.forEach(function(x){if(u0[x[0]]!==x[1]){(p.u=p.u||[]).push(x);n++;}});
-	var a0={};s0.ach.forEach(function(x){a0[x]=1;});
-	s1.ach.forEach(function(x){if(!a0[x]){(p.ach=p.ach||[]).push(x);n++;}});
+	if (s1.u!==s0.u){
+		for (i=0;i<s1.u.length;i++){var c1=s1.u.charCodeAt(i)-48,c0=i<s0.u.length?s0.u.charCodeAt(i)-48:0;if(c1!==c0&&Game.UpgradesById[i]){(p.u=p.u||[]).push([i,c1]);n++;}}
+	}
+	if (s1.ach!==s0.ach){
+		for (i=0;i<s1.ach.length;i++){if(s1.ach.charAt(i)==='1'&&s0.ach.charAt(i)!=='1'&&Game.AchievementsById[i]){(p.ach=p.ach||[]).push(Game.AchievementsById[i].name);n++;}}
+	}
 	for (k in s1.buf){var o=s0.buf[k],c=s1.buf[k];if(!o||o[1]!==c[1]||o[2]!==c[2]){(p.bf=p.bf||{})[k]=c;n++;}}
 	for (k in s0.buf){if(!s1.buf[k]){(p.bk=p.bk||[]).push(k);n++;}}
-	for (k in s1.jo){if(s1.jo[k]!==s0.jo[k]){(p.jne=p.jne||{})[k]=JSON.parse(s1.jo[k]);n++;}}
+	if (s1.jraw!==s0.jraw && s1.jraw){
+		var j0={},j1={};try{j0=JSON.parse(s0.jraw||'{}');j1=JSON.parse(s1.jraw);}catch(e){}
+		for (k in j1){if(JNE_PERSONAL.indexOf(k)===-1&&JSON.stringify(j1[k])!==JSON.stringify(j0[k])){(p.jne=p.jne||{})[k]=j1[k];n++;}}
+	}
 	p.n=n;
 	return p;
 }
@@ -1052,9 +1088,12 @@ function applyPatch(p){
 	}
 	if (p.bk) p.bk.forEach(function(n){if(Game.buffs[n])Game.buffs[n].time=0;});
 	if (p.set && Game.specialTab && ('dragonLevel' in p.set || 'dragonAura' in p.set || 'dragonAura2' in p.set || 'santaLevel' in p.set)){try{Game.ToggleSpecialMenu(1);}catch(e){}}
-	Game.recalculateGains=1; Game.upgradesToRebuild=1; Game.storeToRefresh=1;
+	if (p.b||p.u||p.ach||p.bf||p.bk||p.mg||p.set||p.jne) Game.recalculateGains=1;
+	if (p.u||p.b||p.jne) Game.upgradesToRebuild=1;
+	if (p.b||p.u||p.set) Game.storeToRefresh=1;
 }
 
+var MOD_KEYS={Shift:1,Control:1,Alt:1,Meta:1,CapsLock:1,AltGraph:1};
 function winStart(e){
 	if (!R || !R.ready) return;
 	var t=e.target;
@@ -1063,6 +1102,7 @@ function winStart(e){
 		if (t.closest(NO_RECORD)) return;
 	}
 	R.lastInput=Date.now();
+	if (e.type==='keydown' && (e.repeat || MOD_KEYS[e.key])) return;
 	if (R.win || R.loading || ascending()) return;
 	R.win={s0:snap(),simple:R.simple};
 	later(winEnd,0); // in case the game stopped the event from reaching the window
@@ -1114,6 +1154,8 @@ function installShimmerSync(){
 			later(function(){self.die();},0);
 		}else if (R.isHost){
 			self.ccmpSid=PID.slice(-5)+'-'+self.id;
+			self.ccmpRng=(Math.random()*4294967296)>>>0;
+			var hb=Game.bounds; self.ccmpHB={left:hb.left,top:hb.top,right:hb.right,bottom:hb.bottom};
 			later(function(){if(!self.popped && Game.shimmers.indexOf(self)!==-1) broadcastSpawn(self);},0);
 		}else{
 			// a non-host made a shimmer (cookie storm, a spell, ...): hide it at once.
@@ -1141,6 +1183,18 @@ function installShimmerSync(){
 		if (R.ready && R.isHost && this.ccmpSid)
 			fx({k:'popped',sid:this.ccmpSid,by:R.popBy||PID,name:R.popName||R.player,txt:txt,type:this.type,force:this.force||''});
 	};
+	// Every screen moves a shared shimmer the same way: its random turns come from a number
+	// stream that travels with it, and it moves inside the ★ player's screen area, which is
+	// then scaled to this screen.
+	var ou=proto.update;
+	proto.update=function(){
+		if (this.ccmpRng==null || !this.ccmpHB) return ou.apply(this,arguments);
+		var self=this, MR=Math.random, B=Game.bounds;
+		Math.random=function(){self.ccmpRng=(Math.imul(self.ccmpRng,1664525)+1013904223)>>>0;return self.ccmpRng/4294967296;};
+		Game.bounds=self.ccmpHB;
+		try{return ou.apply(this,arguments);}
+		finally{Math.random=MR;Game.bounds=B;if(self.ccmpMove)fitToScreen(self,B);}
+	};
 	var od=proto.die;
 	proto.die=function(){
 		var r=od.apply(this,arguments);
@@ -1150,16 +1204,55 @@ function installShimmerSync(){
 	};
 }
 
+var NUMPX='(-?[\\d.]+(?:e[+-]?\\d+)?)px';
+var TRANSLATE=new RegExp('translate\\(\\s*'+NUMPX+'\\s*,\\s*'+NUMPX+'\\s*\\)','i');
+function fitToScreen(sh,B){
+	var hb=sh.ccmpHB;
+	if (hb.left===B.left && hb.top===B.top && hb.right===B.right && hb.bottom===B.bottom) return;
+	var st=sh.l.style, tr=st.transform;
+	if (!tr || !TRANSLATE.test(tr)) return;
+	var sx=(B.right-B.left)/Math.max(1,hb.right-hb.left), sy=(B.bottom-B.top)/Math.max(1,hb.bottom-hb.top);
+	st.transform=tr.replace(TRANSLATE,function(_,x,y){return 'translate('+(B.left+(+x-hb.left)*sx)+'px,'+(B.top+(+y-hb.top)*sy)+'px)';});
+}
+function runFrames(sh,n){
+	n=Math.min(Math.round(n),Game.fps*5);
+	for (var i=0;i<n && !sh.popped && Game.shimmers.indexOf(sh)!==-1;i++) sh.update();
+}
+function movingShimmers(){
+	var out=[];
+	Game.shimmers.forEach(function(sh){if(sh.ccmpSid&&sh.ccmpMove&&!sh.ccmpMirror&&!sh.popped)out.push([sh.ccmpSid,shimmerProps(sh),sh.life]);});
+	return out;
+}
+function resyncMirror(x,t){
+	var sh=R.mirrors[x[0]]; if (!sh || sh.popped || !x[1]) return;
+	for (var k in x[1]) sh[k]=x[1][k];
+	if (typeof x[2]==='number') sh.life=x[2];
+	runFrames(sh,(DB.now()-t)/1000*Game.fps);
+}
+// a shimmer that only this screen can click: a fresh element (without the shimmer type's own
+// click handler, as JNE's fish have) that sends the click to the ★ player
+function mirrorize(sh){
+	var fresh=sh.l.cloneNode(true);
+	if (sh.l.parentNode) sh.l.parentNode.replaceChild(fresh,sh.l);
+	sh.l=fresh;
+	fresh.addEventListener('click',function(ev){sh.pop(ev);});
+	fresh.addEventListener('touchend',function(ev){sh.pop(ev);});
+	if (!sh.ccmpMirror){sh.ccmpLead=sh.spawnLead?1:0;sh.spawnLead=0;}
+	sh.ccmpMirror=1;
+	R.mirrors[sh.ccmpSid]=sh;
+}
 function broadcastSpawn(sh){
 	var b=Game.bounds, st=sh.l.style;
+	sh.ccmpMove=st.left===''?1:0;
 	fx({k:'spawn',sid:sh.ccmpSid,type:sh.type,force:sh.force||'',wrath:sh.wrath?1:0,noCount:sh.noCount?1:0,
 		fx:(sh.x-b.left)/Math.max(1,b.right-b.left),fy:(sh.y-b.top)/Math.max(1,b.bottom-b.top),
 		life:sh.life,dur:sh.dur,size:sh.sizeMult||1,id:sh.id,
 		bi:st.backgroundImage||'',bp:st.backgroundPosition||'',w:st.width||'',h:st.height||'',
-		pos:st.left!==''?1:0,pr:shimmerProps(sh)});
+		pos:sh.ccmpMove?0:1,pr:shimmerProps(sh),lead:sh.spawnLead?1:0,
+		hb:sh.ccmpHB?[sh.ccmpHB.left,sh.ccmpHB.top,sh.ccmpHB.right,sh.ccmpHB.bottom]:null});
 }
 // numbers and flags a shimmer type keeps on the shimmer (direction, swim speed, path...), so copies move the same way
-var SH_SKIP={id:1,life:1,dur:1,type:1,force:1,wrath:1,noCount:1,popped:1,spawnLead:1,sizeMult:1,ccmpSid:1,ccmpMirror:1,ccmpGone:1};
+var SH_SKIP={id:1,life:1,dur:1,type:1,force:1,wrath:1,noCount:1,popped:1,spawnLead:1,sizeMult:1,ccmpSid:1,ccmpMirror:1,ccmpGone:1,ccmpLead:1};
 function shimmerProps(sh){
 	var o={};
 	for (var k in sh){
@@ -1175,23 +1268,21 @@ function reshareShimmers(){
 
 function makeMirror(m){
 	if (R.isHost || R.mirrors[m.sid] || !Game.shimmerTypes[m.type] || ascending()) return;
-	var life=(m.life||0)-Math.round(Math.max(0,DB.now()-m.t)/1000*Game.fps);
-	if (life<Game.fps*0.5) return;
+	var behind=Math.max(0,DB.now()-m.t)/1000*Game.fps; // frames since the ★ player sent it
+	var life=(m.life||0)-Math.round(behind);
+	if (m.pos!==0 && life<Game.fps*0.5) return;
 	var sh;
 	R.mirroring++;
 	try{sh=new Game.shimmer(m.type,{type:m.force||undefined,wrath:m.wrath,noWrath:!m.wrath},m.noCount);}
 	catch(e){console.error('[rooms] mirror',e);return;}
 	finally{R.mirroring--;}
 	if (Game.shimmers.indexOf(sh)===-1) return; // its type refused to spawn (wrong season)
-	sh.ccmpMirror=1; sh.ccmpSid=m.sid; sh.spawnLead=0; sh.wrath=m.wrath; sh.force=m.force||'';
-	// some shimmer types (JNE's fish) put their own click handler on the element and skip the
-	// normal pop; a fresh copy of the element only answers to ours, so a click always goes to the room
-	var fresh=sh.l.cloneNode(true);
-	if (sh.l.parentNode) sh.l.parentNode.replaceChild(fresh,sh.l);
-	sh.l=fresh;
-	fresh.addEventListener('click',function(ev){sh.pop(ev);});
-	fresh.addEventListener('touchend',function(ev){sh.pop(ev);});
+	sh.ccmpSid=m.sid; sh.spawnLead=0; sh.wrath=m.wrath; sh.force=m.force||'';
+	mirrorize(sh); sh.ccmpLead=m.lead?1:0;
 	if (m.pr) for (var pk in m.pr) sh[pk]=m.pr[pk];
+	var lb=Game.bounds;
+	sh.ccmpHB=m.hb?{left:m.hb[0],top:m.hb[1],right:m.hb[2],bottom:m.hb[3]}:{left:lb.left,top:lb.top,right:lb.right,bottom:lb.bottom};
+	sh.ccmpMove=m.pos===0?1:0;
 	var b=Game.bounds;
 	var st=sh.l.style;
 	if (m.pos!==0){ // placed with left/top (golden cookies); moving ones are drawn from x/y every frame
@@ -1200,8 +1291,10 @@ function makeMirror(m){
 	}
 	if (m.bi) st.backgroundImage=m.bi; if (m.bp) st.backgroundPosition=m.bp;
 	if (m.w) st.width=m.w; if (m.h) st.height=m.h;
-	sh.dur=m.dur; sh.life=life; sh.sizeMult=m.size||1; sh.id=m.id;
-	R.mirrors[m.sid]=sh; R.fxPos[m.sid]={x:sh.x,y:sh.y,w:sh.l.offsetWidth||96};
+	sh.dur=m.dur; sh.sizeMult=m.size||1; sh.id=m.id;
+	if (sh.ccmpMove){sh.life=m.life;runFrames(sh,behind);} // catch up to where it is on the ★ screen now
+	else sh.life=life;
+	R.fxPos[m.sid]={x:sh.x,y:sh.y,w:sh.l.offsetWidth||96};
 }
 function removeMirror(sid){
 	var sh=R.mirrors[sid];
@@ -1213,8 +1306,10 @@ function mirrorPop(sh,e){
 	if (e && e.preventDefault) e.preventDefault();
 	if (sh.force==='cookie storm drop') PlaySound('snd/click'+Math.floor(Math.random()*7+1)+'.mp3',0.75);
 	else PlaySound('snd/shimmerClick.mp3');
-	try{Game.SparkleAt(sh.x+48,sh.y+48);}catch(err){}
-	R.fxPos[sh.ccmpSid]={x:sh.x,y:sh.y,w:sh.l.offsetWidth||96};
+	var r=sh.l.getBoundingClientRect(), gr=Game.l.getBoundingClientRect();
+	var px=r.left-gr.left, py=r.top-gr.top;
+	try{Game.SparkleAt(px+r.width/2,py+r.height/2);}catch(err){}
+	R.fxPos[sh.ccmpSid]={x:px,y:py,w:r.width||96};
 	fx({k:'pop',sid:sh.ccmpSid,by:PID,name:R.player});
 	sh.die();
 }
@@ -1285,7 +1380,9 @@ function installWrinklerSync(){
 		if (!R.ready || R.loading) return uw.apply(self,args);
 		if (R.isHost){
 			// a pop is about to happen: record what it gives so the room gets it too
-			var soon=Game.Click || Game.wrinklers.some(function(w){return w.phase>0&&w.hp<=1.3;});
+			// a pop needs a wrinkler that is nearly burst, or a click on the one under the mouse
+			var soon=false, W=Game.wrinklers;
+			for (var wi=0;wi<W.length;wi++){var w=W[wi];if(w.phase>0&&(w.hp<=1.3||(Game.Click&&w.selected))){soon=true;break;}}
 			if (soon && !R.win) return withPatch(function(){return uw.apply(self,args);});
 			return uw.apply(self,args);
 		}
@@ -1389,11 +1486,14 @@ function startSync(){
 	R.unsub.push(DB.on(P('live'),onLive));
 	R.unsub.push(DB.on(P('players'),function(p){
 		var old=R.players||{};
-		R.players=p||{};renderPlayers();
+		R.players=p||{};R.playersLoaded=true;renderPlayers();
 		if (R.isHost) for (var id in R.players) if (!old[id] && id!==PID) reshareShimmers(); // newcomers see what's on screen
 	}));
 	R.unsub.push(DB.onAdded(P('fx'),R.joinT-1000,onFx));
-	R.unsub.push(DB.on(P('host'),function(h){R.hostPid=h&&h.pid;renderPlayers();}));
+	R.unsub.push(DB.on(P('host'),function(h){
+		var pid=h&&h.pid; R.hostRec=h||null; R.hostKnown=true;
+		if (pid!==R.hostPid){R.hostPid=pid;renderPlayers();}
+	}));
 	R.unsub.push(DB.onAdded(P('chat'),R.joinT-10*60000,function(k,m){if(m)chatLine(m);}));
 	R.unsub.push(DB.onAdded(P('req'),R.joinT,function(k,q){
 		if (!R.isHost || !q) return;
@@ -1426,10 +1526,10 @@ function tick(){
 	if (R.pendingLoad && !ascending()) loadLatest();
 	if (R.dirty && !ascending() && Date.now()-R.lastPublish>1200){R.dirty=false;publishSave(true,'action');}
 	if (R.waitFresh && Date.now()-R.waitFreshAt>9000){R.waitFresh=false;loadLatestAny();}
-	if (!R.isHost && Date.now()-R.lastLoadAt>90000 && idle()) requestFresh();
+	if (!R.isHost && Date.now()-R.lastLoadAt>300000 && idle()) requestFresh();
 	if (R.isHost) hostTick();
 }
-async function loadLatestAny(){var s=await DB.get(P('save'));if(s&&s.rev>R.loadedRev&&!ascending())applySave(s);}
+async function loadLatestAny(){var s=await DB.get(P('save'));if(s&&(s.rev>R.loadedRev||R.resyncing)&&!ascending())applySave(s);} // a resync takes the room's save even if nothing newer came
 
 var lastLive=0,lastClean=0;
 function hostTick(){
@@ -1441,7 +1541,7 @@ function hostTick(){
 		DB.set(P('live'),{by:PID,t:DB.now(),vec:R.applied,c:Game.cookies,e:Game.cookiesEarned,
 			b:Game.ObjectsById.map(function(o){return o.amount;}).join(','),
 			u:Game.UpgradesOwned,a:Game.AchievementsOwned,r:Game.resets,s:Game.season,l:Math.floor(Game.lumps),
-			w:worldFp(),wr:wrinklerState(),h:Game.heralds});
+			w:worldFp(),wr:wrinklerState(),h:Game.heralds,st:shimmerTimers(),mv:movingShimmers()});
 	}
 	if (now-R.lastPublish>30000){publishSave(false,'autosave');DB.update(P('meta'),{t:DB.now()});}
 	if (now-lastClean>60000){
@@ -1461,6 +1561,8 @@ function sameVec(a,b){
 }
 function onLive(L){
 	if (!L || !R.ready || R.isHost || R.loading || L.by===PID || ascending()) return;
+	if (L.st) R.lastTimers={at:L.t,v:L.st};
+	if (L.mv) L.mv.forEach(function(x){resyncMirror(x,L.t);});
 	if (typeof L.h==='number' && (L.h!==Game.heralds || !Game.externalDataLoaded)) setHeralds(L.h);
 	applyWrinklers(L.wr);
 	if (!sameVec(L.vec,R.applied)){R.mismatch=0;return;} // actions still on their way
@@ -1479,23 +1581,33 @@ function onLive(L){
 	}
 }
 
+// The ★ role only moves when it has to: the ★ player left, stopped answering, or has had
+// the game in a hidden tab for a while (hidden tabs run slowly). Switching tabs for a moment,
+// or someone joining, never moves it.
+function handOffAfter(){return SET.hostHandOffMs||60000;}
 function visibleOthers(){
 	var p=R.players||{},now=DB.now();
 	return Object.keys(p).some(function(id){return id!==PID&&p[id]&&p[id].v!==false&&now-p[id].t<30000;});
 }
 async function hostElection(){
 	try{
-		var h=await DB.get(P('host'));
+		var h=R.hostKnown?R.hostRec:await DB.get(P('host'));
 		var now=DB.now();
 		var pl=R.players||{};
-		var hostHidden=function(pid){return pl[pid]&&pl[pid].v===false;};
+		var hidLong=function(x){return x && x.v===false && x.hs && now-x.hs>handOffAfter();};
 		if (h && h.pid===PID){
-			// a hidden tab runs slowly: hand the room to someone who is looking at it
-			if (document.hidden && visibleOthers()){await DB.remove(P('host'));setHost(false);return;}
+			// hidden for a long time: hand the room to someone who is looking at it
+			if (document.hidden && R.hiddenSince && now-R.hiddenSince>handOffAfter() && visibleOthers()){await DB.remove(P('host'));setHost(false);return;}
 			await DB.set(P('host'),{pid:PID,t:now,name:R.player});
 			setHost(true);
 		}else{
-			var free=function(cur){return !cur || cur.pid===PID || now-cur.t>12000 || !pl[cur.pid] || (hostHidden(cur.pid)&&!document.hidden);};
+			var stale=document.hidden?90000:25000; // a hidden tab's own clock is slow too, so it waits longer
+			var free=function(cur){
+				if (!cur || cur.pid===PID) return true;
+				if (now-cur.t>stale) return true; // the ★ player stopped answering
+				if (R.playersLoaded && !pl[cur.pid] && now-cur.t>8000) return true; // the ★ player left
+				return hidLong(pl[cur.pid]) && !document.hidden;
+			};
 			if (free(h)){
 				var ok=await DB.claim(P('host'),function(cur){return free(cur)?{pid:PID,t:now,name:R.player}:undefined;});
 				setHost(!!ok);
@@ -1508,8 +1620,26 @@ function setHost(b){
 	R.isHost=b;
 	if (b){DB.onDisconnectRemove(P('host'));lastLive=0;}
 	else DB.cancelDisconnect(P('host'));
-	// shimmers on screen belonged to the old role: copies of the old host's, or our own real ones
-	Game.shimmers.slice().forEach(function(sh){if(b?sh.ccmpMirror:!sh.ccmpMirror){sh.popped=true;sh.die();}});
+	// what's on screen stays: the new ★ takes over the copies it has, the old ★ turns its own into copies
+	Game.shimmers.slice().forEach(function(sh){
+		if (b && sh.ccmpMirror){
+			delete R.mirrors[sh.ccmpSid];
+			sh.ccmpMirror=0; sh.spawnLead=sh.ccmpLead?1:0;
+		}else if (!b && !sh.ccmpMirror){
+			if (sh.ccmpSid && !sh.popped) mirrorize(sh);
+			else {sh.popped=true;sh.die();}
+		}
+	});
+	// carry on the old ★ player's golden cookie (and reindeer, turkey...) timers
+	if (b && R.lastTimers){
+		var el=Math.min(Game.fps*60,Math.max(0,(DB.now()-R.lastTimers.at)/1000*Game.fps));
+		shimmerTimers(R.lastTimers.v);
+		for (var i in R.lastTimers.v){
+			var t=Game.shimmerTypes[i]; if (!t) continue;
+			if (t.spawned && !Game.shimmers.some(function(sh){return sh.type===i&&sh.spawnLead;})){t.spawned=0;t.time=0;} // it was just caught
+			else if (!t.spawned) t.time+=el;
+		}
+	}
 	renderPlayers();
 }
 
@@ -1526,7 +1656,7 @@ function buildPanel(){
 			'<div class="pl" id="ccmp-players"></div>'+
 			'<div class="feed" id="ccmp-feed"></div>'+
 			'<input id="ccmp-chat" maxlength="200" placeholder="Chat… (Enter to send)">'+
-			'<div class="btns"><a id="ccmp-copy">Copy invite link</a><a id="ccmp-leave">Leave room</a></div>'+
+			'<div class="btns"><a id="ccmp-copy">Copy link</a><a id="ccmp-resync" title="Full resync (Alt+P)">Resync (Alt+P)</a><a id="ccmp-leave">Leave room</a></div>'+
 		'</div>';
 	document.body.appendChild(d);
 	$('ccmp-hd').onclick=function(){d.classList.toggle('min');lsSet('ccmp-panel-min',d.classList.contains('min')?'1':'0');};
@@ -1538,6 +1668,7 @@ function buildPanel(){
 		}
 	});
 	$('ccmp-chat').addEventListener('keyup',function(e){e.stopPropagation();});
+	$('ccmp-resync').onclick=function(){resync();};
 	$('ccmp-copy').onclick=function(){
 		var url=location.href.split('#')[0]+'#'+R.code;
 		(navigator.clipboard?navigator.clipboard.writeText(url):Promise.reject()).then(function(){sys('Invite link copied.');},function(){prompt('Invite link:',url);});
