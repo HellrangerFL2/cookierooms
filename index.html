@@ -39,11 +39,13 @@
       between tabs of the same browser).
    ===================================================================== */
 window.CCMP_FIREBASE_CONFIG = {
-	apiKey: "",
-	authDomain: "",
-	databaseURL: "",
-	projectId: "",
-	appId: ""
+	apiKey: "AIzaSyCi_lmKXtSsfBugXC_TiQI5fFNHuJO0b7c",
+	authDomain: "cookier-faf44.firebaseapp.com",
+	databaseURL: "https://cookier-faf44-default-rtdb.europe-west1.firebasedatabase.app",
+	projectId: "cookier-faf44",
+	storageBucket: "cookier-faf44.firebasestorage.app",
+	messagingSenderId: "41959419925",
+	appId: "1:41959419925:web:cb6f71db82d75fd4a95e1c"
 };
 
 /* 2) Game settings (normally no need to touch) */
@@ -320,7 +322,11 @@ async function join(){
 	lockLobby(true);msg('Looking for room '+code+'…');
 	try{
 		var meta=await DB.get('rooms/'+code+'/meta');
-		if (!meta){msg('No room with code '+code+' was found.');lockLobby(false);return;}
+		if (!meta){
+			msg(DB.kind==='firebase'?'No room with code '+code+' was found.'
+				:'No room '+code+' in this browser. This page isn\'t connected to the server (see "Server" at the bottom), so it can only see rooms made in this browser.');
+			lockLobby(false);return;
+		}
 		enterRoom(code,meta.name,name,false);
 	}catch(e){console.error(e);msg('Could not join: '+e.message);lockLobby(false);}
 }
