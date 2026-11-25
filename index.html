@@ -123,6 +123,7 @@ window.CCMP_SETTINGS = {
 #ccmp-panel .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;}
 #ccmp-panel .opt{display:flex;align-items:center;gap:5px;margin-top:6px;color:#cdb08d;cursor:pointer;user-select:none;}
 #ccmp-panel .opt input{width:auto;margin:0;}
+#ccmp-panel .opt select{margin-left:auto;background:#140c06;color:#fbead2;border:1px solid #6b4223;border-radius:4px;font:12px Tahoma,sans-serif;padding:1px 2px;}
 #ccmp-cursors{position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:100000000;overflow:hidden;}
 #ccmp-cursors .cur{position:absolute;left:0;top:0;transition:transform .12s linear;will-change:transform;}
 #ccmp-cursors .cur svg{display:block;filter:drop-shadow(0 1px 1px rgba(0,0,0,.7));}
@@ -440,7 +441,7 @@ function P(sub){return 'rooms/'+R.code+(sub?'/'+sub:'');}
 
 async function enterRoom(code,roomName,playerName,fresh){
 	R={code:code,name:roomName,player:playerName,fresh:fresh,
-		isHost:false,ready:false,loading:false,remote:0,depth:0,pd:0,capD:0,capT:0,clickC:0,clickE:0,clickH:0,bc:null,heraldTry:0,
+		isHost:false,ready:false,loading:false,remote:0,depth:0,pd:0,capD:0,capT:0,effort:effortLevel(),clickC:0,clickE:0,clickH:0,bc:null,heraldTry:0,
 		seq:0,applied:{},log:[],loadedRev:0,simple:0,dirty:false,lastPublish:0,lastAutosave:0,
 		clk:0,hand:0,mismatch:0,waitFresh:false,waitFreshAt:0,waitFreshFrom:0,pendingLoad:false,
 		players:{},joinT:DB.now(),hostPid:null,unsub:[],
@@ -454,10 +455,11 @@ async function enterRoom(code,roomName,playerName,fresh){
 
 	// presence
 	var me=P('players/'+PID);
-	await DB.set(me,{name:playerName,t:DB.now(),joined:DB.now(),v:!document.hidden,hs:document.hidden?DB.now():0});
+	await DB.set(me,{name:playerName,t:DB.now(),joined:DB.now(),v:!document.hidden,hs:document.hidden?DB.now():0,ef:R.effort});
 	DB.onDisconnectRemove(me);
 	R.hiddenSince=document.hidden?DB.now():0;
-	var presence=function(){return {t:DB.now(),name:playerName,v:!document.hidden,hs:R.hiddenSince||0};};
+	var presence=function(){return {t:DB.now(),name:playerName,v:!document.hidden,hs:R.hiddenSince||0,ef:R.effort};};
+	R.presence=function(){DB.update(me,presence());};
 	setInterval(function(){DB.update(me,presence());},10000);
 	document.addEventListener('visibilitychange',function(){
 		R.hiddenSince=document.hidden?(R.hiddenSince||DB.now()):0;
@@ -494,6 +496,9 @@ async function enterRoom(code,roomName,playerName,fresh){
 	}
 
 	if (save){R.applied=Object.assign({},save.vec||{});R.loadedRev=save.rev||0;}
+	// action numbers carry on from the current time, so after reloading the page they're
+	// still higher than anything this tab sent before (others skip numbers they've seen)
+	R.seq=Math.max(R.applied[PID]||0, Math.floor(DB.now()));
 	installHooks();
 	buildPanel();
 	startSync();
@@ -654,13 +659,33 @@ async function publishSave(force,why){
 	await DB.set(P('rev'),{rev:rev,by:PID,force:!!force,why:why||'',t:DB.now()});
 }
 
+/* How hard this player's game works at staying in step with the room. Standard is what it
+   always did. live: how often the ★ player shares its state (the highest setting of anyone
+   in the room counts); full: a complete reload at least this often; drift/driftGap: how many
+   differing checks in a row trigger a reload, and how soon after the last one; struct: the
+   same for buildings/upgrades; eager: reload even while the player is busy (not mid-drag). */
+var EFFORT=[
+	{name:'Low',      live:4000,full:900000,drift:3,driftGap:60000,struct:4,wait:3000},
+	{name:'Standard', live:2000,full:300000,drift:2,driftGap:30000,struct:3,wait:3000},
+	{name:'High',     live:1000,full:60000, drift:2,driftGap:10000,struct:2,wait:2000},
+	{name:'Very high',live:1000,full:15000, drift:1,driftGap:4000, struct:1,wait:1000},
+	{name:'Extreme',  live:1000,full:1500,  drift:1,driftGap:1500, struct:1,wait:400,eager:1}
+];
+function effortLevel(){var v=parseInt(lsGet('ccmp-effort'),10);return v>=0&&v<EFFORT.length?v:1;}
+function EF(){return EFFORT[R&&R.effort!=null?R.effort:1];}
+function readyToLoad(){return EF().eager?!R.mouseDown:idle();}
+function hostLiveMs(){
+	var ms=EFFORT[R.effort].live, p=R.players||{}, now=DB.now();
+	for (var id in p){var x=p[id];if(x&&now-x.t<30000&&EFFORT[x.ef])ms=Math.min(ms,EFFORT[x.ef].live);}
+	return ms;
+}
 function idle(){return !R.mouseDown && Date.now()-R.lastInput>1200 && !Game.promptOn;}
 async function loadLatest(){
 	if (R.loading) return;
 	if (ascending()){R.pendingLoad=true;return;}
-	if (!idle()){ // wait until the player lets go (at most 3 s)
+	if (!readyToLoad()){ // wait until the player lets go (at most 3 s)
 		if (!R.forcedSince) R.forcedSince=Date.now();
-		if (Date.now()-R.forcedSince<3000){later(loadLatest,300);return;}
+		if (Date.now()-R.forcedSince<EF().wait){later(loadLatest,EF().eager?100:300);return;}
 	}
 	R.forcedSince=0;
 	R.pendingLoad=false;
@@ -691,7 +716,7 @@ function resync(){
 	}
 }
 function requestFresh(){
-	if (R.waitFresh && Date.now()-R.waitFreshAt<8000) return;
+	if (R.waitFresh && Date.now()-R.waitFreshAt<Math.min(8000,EF().full+1000)) return;
 	R.waitFresh=true; R.waitFreshAt=Date.now(); R.waitFreshFrom=DB.now()-1500;
 	DB.push(P('req'),{by:PID,t:DB.now()});
 }
@@ -1595,7 +1620,7 @@ function tick(){
 	if (R.pendingLoad && !ascending()) loadLatest();
 	if (R.dirty && !ascending() && Date.now()-R.lastPublish>1200){R.dirty=false;publishSave(true,'action');}
 	if (R.waitFresh && Date.now()-R.waitFreshAt>9000){R.waitFresh=false;loadLatestAny();}
-	if (!R.isHost && Date.now()-R.lastLoadAt>300000 && idle()) requestFresh();
+	if (!R.isHost && Date.now()-R.lastLoadAt>EF().full && readyToLoad()) requestFresh();
 	if (R.isHost) hostTick();
 }
 async function loadLatestAny(){var s=await DB.get(P('save'));if(s&&(s.rev>R.loadedRev||R.resyncing)&&!ascending())applySave(s);} // a resync takes the room's save even if nothing newer came
@@ -1608,7 +1633,7 @@ function hostTick(){
 	// a buff started or ended: tell everyone now instead of at the next 2-second update
 	var bsig=Object.keys(Game.buffs).sort().join('|');
 	if (bsig!==R.buffSig && now-lastLive>250) lastLive=0; // (too soon after the last one: the next tick sends it)
-	if (now-lastLive>2000){
+	if (now-lastLive>hostLiveMs()){
 		lastLive=now; R.buffSig=bsig;
 		DB.set(P('live'),{by:PID,t:DB.now(),vec:R.applied,c:Game.cookies,e:Game.cookiesEarned,
 			b:Game.ObjectsById.map(function(o){return o.amount;}).join(','),
@@ -1636,7 +1661,7 @@ function buffState(){
 	}
 	return out;
 }
-function syncBuffs(list,t){
+function syncBuffs(list,t,canRemove){
 	var late=Math.max(0,(DB.now()-t)/1000*Game.fps), seen={};
 	R.remote++;
 	try{
@@ -1653,7 +1678,7 @@ function syncBuffs(list,t){
 			}else if (Math.abs(cur.time-time)>Game.fps*2){cur.time=time;cur.maxTime=x[2];}
 		});
 		// a buff the ★ player doesn't have: it ended there (all actions are accounted for, see onLive)
-		for (var n in Game.buffs) if (!seen[n]) Game.buffs[n].time=0;
+		if (canRemove) for (var n in Game.buffs) if (!seen[n]) Game.buffs[n].time=0;
 	}finally{R.remote--;}
 }
 function sameVec(a,b){
@@ -1668,14 +1693,15 @@ function onLive(L){
 	if (L.mv) L.mv.forEach(function(x){resyncMirror(x,L.t);});
 	if (typeof L.h==='number' && (L.h!==Game.heralds || !Game.externalDataLoaded)) setHeralds(L.h);
 	applyWrinklers(L.wr);
-	if (!sameVec(L.vec,R.applied)){R.mismatch=0;return;} // actions still on their way
-	if (L.bf) syncBuffs(L.bf,L.t);
+	var allIn=sameVec(L.vec,R.applied);
+	if (L.bf) syncBuffs(L.bf,L.t,allIn); // buffs the ★ player has are added even while actions are on their way
+	if (!allIn){R.mismatch=0;return;} // actions still on their way
 	if (L.w && L.w!==worldFp()){
-		if (++R.wMis>=2 && idle() && Date.now()-R.lastLoadAt>30000){R.wMis=0;requestFresh();}
+		if (++R.wMis>=EF().drift && readyToLoad() && Date.now()-R.lastLoadAt>EF().driftGap){R.wMis=0;requestFresh();}
 	}else R.wMis=0;
 	var struct=Game.ObjectsById.map(function(o){return o.amount;}).join(',')!==L.b ||
 		Game.UpgradesOwned!==L.u || Game.resets!==L.r || Game.season!==L.s || Math.floor(Game.lumps)!==L.l;
-	if (struct){ if(++R.mismatch>=3){R.mismatch=0;requestFresh();} return; }
+	if (struct){ if(++R.mismatch>=EF().struct){R.mismatch=0;requestFresh();} return; }
 	R.mismatch=0;
 	var el=Math.min(5,Math.max(0,(DB.now()-L.t)/1000));
 	var exp=L.c+Game.cookiesPs*(1-(Game.cpsSucked||0))*el;
@@ -1877,10 +1903,18 @@ function buildPanel(){
 			'<input id="ccmp-chat" maxlength="200" placeholder="Chat… (Enter to send)">'+
 			'<div class="btns"><a id="ccmp-copy">Copy link</a><a id="ccmp-resync" title="Full resync (Alt+P)">Resync (Alt+P)</a><a id="ccmp-leave">Leave room</a></div>'+
 			'<label class="opt"><input type="checkbox" id="ccmp-curopt"'+(cursorsOn()?' checked':'')+'> Show other players\' cursors</label>'+
+			'<label class="opt" title="How often your game checks that it matches the room, and reloads it if not. Higher keeps you closer in step but can stutter; Extreme reloads the whole bakery every 1-2 seconds.">Sync effort <select id="ccmp-effort">'+
+				EFFORT.map(function(e,i){return '<option value="'+i+'"'+(i===R.effort?' selected':'')+'>'+e.name+'</option>';}).join('')+'</select></label>'+
 		'</div>';
 	document.body.appendChild(d);
 	$('ccmp-hd').onclick=function(){d.classList.toggle('min');lsSet('ccmp-panel-min',d.classList.contains('min')?'1':'0');};
 	$('ccmp-curopt').onchange=function(){setCursors(this.checked);};
+	$('ccmp-effort').onchange=function(){
+		R.effort=+this.value; lsSet('ccmp-effort',String(R.effort));
+		if (R.presence) R.presence();
+		sys('Sync effort: '+EFFORT[R.effort].name+(R.effort===4?' (the whole bakery reloads every 1-2 seconds)':'')+'.');
+	};
+	$('ccmp-effort').addEventListener('keydown',function(e){e.stopPropagation();});
 	$('ccmp-chat').addEventListener('keydown',function(e){
 		e.stopPropagation();
 		if (e.key==='Enter'){
