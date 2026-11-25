@@ -100,6 +100,22 @@ window.CCMP_SETTINGS = {
 #ccmp-lobby .msg{min-height:22px;margin-top:10px;color:#ff9b7a;font-size:14px;}
 #ccmp-lobby .status{margin-top:28px;font-size:13px;color:#a88c6c;border-top:1px solid #3a2414;padding-top:14px;}
 #ccmp-lobby .status b.ok{color:#8ef05a;} #ccmp-lobby .status b.warn{color:#ffb35a;}
+#ccmp-choose{display:none;margin-top:22px;}
+#ccmp-choose .plist{display:flex;flex-direction:column;gap:8px;margin:6px 0 4px;}
+#ccmp-choose .pbtn{display:block;text-align:left;margin:0;padding:10px 14px;background:rgba(20,12,6,.9);color:#fbead2;border:1px solid #6b4223;box-shadow:none;font-weight:normal;}
+#ccmp-choose .pbtn:hover{border-color:#e0a050;filter:none;}
+#ccmp-choose .pbtn.mine{border-color:#e0a050;box-shadow:0 0 0 2px rgba(224,160,80,.25);}
+#ccmp-choose .pbtn b{font-size:17px;color:#ffd9a0;}
+#ccmp-choose .pbtn small{display:block;color:#b8946a;font-size:12px;margin-top:2px;}
+#ccmp-choose .pbtn .tag{float:right;font-size:11px;color:#8ef05a;}
+#ccmp-choose .back{display:inline-block;margin-top:14px;color:#b8946a;cursor:pointer;text-decoration:underline;}
+#ccmp-stats{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:100000003;max-width:92vw;max-height:80vh;overflow:auto;background:rgba(12,8,5,.97);border:1px solid #6b4223;border-radius:8px;color:#f3e6d3;font:12px/1.4 Tahoma,Verdana,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.8);padding:10px 14px;}
+#ccmp-stats h3{margin:0 0 8px;font:bold 15px Georgia,serif;color:#ffd9a0;}
+#ccmp-stats table{border-collapse:collapse;}
+#ccmp-stats th,#ccmp-stats td{padding:3px 8px;text-align:right;white-space:nowrap;border-bottom:1px solid #2a1a0e;}
+#ccmp-stats th{color:#b8946a;font-weight:normal;}
+#ccmp-stats td:first-child,#ccmp-stats th:first-child{text-align:left;}
+#ccmp-stats .x{position:absolute;right:8px;top:6px;cursor:pointer;color:#b8946a;font-size:16px;}
 
 #ccmp-loading{position:fixed;inset:0;z-index:100000002;display:none;align-items:center;justify-content:center;background:rgba(5,3,2,.88);color:#ffd9a0;font:20px Georgia,serif;text-align:center;}
 #ccmp-loading small{display:block;margin-top:8px;font-size:14px;color:#b8946a;}
@@ -158,6 +174,7 @@ window.CCMP_SETTINGS = {
 				<div class="settings" style="margin-top:14px;">Got a link from a friend? It already fills in the code.</div>
 			</div>
 		</div>
+		<div class="card" id="ccmp-choose"></div>
 		<div class="msg" id="ccmp-msg"></div>
 		<div class="recent" id="ccmp-recent"></div>
 		<div class="status" id="ccmp-status"></div>
@@ -233,6 +250,7 @@ FirebaseBackend.prototype={
 	onDisconnectRemove:function(p){return this.db.ref(p).onDisconnect().remove();},
 	cancelDisconnect:function(p){return this.db.ref(p).onDisconnect().cancel();},
 	claim:function(p,fn){return this.db.ref(p).transaction(fn).then(function(r){return r.committed;});},
+	inc:function(p,d){var u={};for(var k in d)u[k]=firebase.database.ServerValue.increment(d[k]);return this.db.ref(p).update(u);},
 	olderThan:function(p,t){return this.db.ref(p).orderByChild('t').endAt(t).get().then(function(s){var k=[];s.forEach(function(c){k.push(c.key);});return k;});}
 };
 
@@ -263,6 +281,7 @@ LocalBackend.prototype={
 	onAdded:function(p,since,cb){var L={p:p,since:since,cb:cb,seen:{}};this.added.push(L);this._checkAdded(L,this._root());var self=this;return function(){self.added=self.added.filter(function(x){return x!==L;});};},
 	onDisconnectRemove:function(p){this.mine.push(p);return Promise.resolve();},
 	cancelDisconnect:function(p){this.mine=this.mine.filter(function(x){return x!==p;});return Promise.resolve();},
+	inc:function(p,d){var r=this._root();for(var k in d){var cur=+this._at(r,p+'/'+k)||0;this._put(r,p+'/'+k,cur+d[k]);}this._save(r);return Promise.resolve();},
 	claim:function(p,fn){var r=this._root();var nv=fn(this._at(r,p));if(nv===undefined)return Promise.resolve(false);this._put(r,p,nv);this._save(r);return Promise.resolve(true);},
 	olderThan:function(p,t){var o=this._at(this._root(),p)||{},k=[];for(var i in o){if(o[i]&&o[i].t<=t)k.push(i);}return Promise.resolve(k);},
 	_check:function(L,r){var v=this._at(r,L.p),s=JSON.stringify(v);if(s!==L.last){L.last=s;try{L.cb(v);}catch(e){console.error(e);}}},
@@ -319,11 +338,11 @@ async function create(){
 		for (var i=0;i<10;i++){code=randCode(5);if(!(await DB.get('rooms/'+code+'/meta')))break;}
 		var roomName=$('ccmp-roomname').value.trim()||(name+"'s bakery");
 		await DB.set('rooms/'+code+'/meta',{name:roomName,created:DB.now(),by:name,t:DB.now()});
-		enterRoom(code,roomName,name,true);
+		var prof=await newProfile(code,name);
+		enterRoom(code,roomName,name,true,prof);
 	}catch(e){console.error(e);msg('Could not create the room: '+e.message);lockLobby(false);}
 }
 async function join(){
-	var name=needName();if(!name)return;
 	var code=codeInput.value.trim().toUpperCase();
 	if (!code){msg('Type a room code.');codeInput.focus();return;}
 	lockLobby(true);msg('Looking for room '+code+'…');
@@ -334,8 +353,55 @@ async function join(){
 				:'No room '+code+' in this browser. This page isn\'t connected to the server (see "Server" at the bottom), so it can only see rooms made in this browser.');
 			lockLobby(false);return;
 		}
-		enterRoom(code,meta.name,name,false);
+		var profs=(await DB.get('rooms/'+code+'/profiles'))||{};
+		// reloading the page while in the room: carry on as the same player
+		var again=sessionStorage.getItem('ccmp-prof-'+code);
+		if (again && profs[again]){enterRoom(code,meta.name,profs[again].name,false,again);return;}
+		if (!Object.keys(profs).length){
+			var name=needName(); if (!name){lockLobby(false);return;}
+			enterRoom(code,meta.name,name,false,await newProfile(code,name));
+			return;
+		}
+		msg(''); showChooser(code,meta,profs);
 	}catch(e){console.error(e);msg('Could not join: '+e.message);lockLobby(false);}
+}
+/* Players of a room: each one keeps a name and stats in the room. Joining again asks who you are. */
+function newProfile(code,name){
+	var id='u'+randId();
+	return DB.set('rooms/'+code+'/profiles/'+id,{name:name,created:DB.now(),last:DB.now(),stats:{sessions:0}}).then(function(){return id;});
+}
+function fmtTime(sec){sec=Math.floor(sec||0);var h=Math.floor(sec/3600),m=Math.floor(sec%3600/60);return h?h+' h '+m+' min':m+' min';}
+function fmtAgo(t){var d=Math.max(0,Date.now()-(t||0))/1000;if(d<90)return 'just now';if(d<5400)return Math.round(d/60)+' min ago';if(d<129600)return Math.round(d/3600)+' h ago';return Math.round(d/86400)+' days ago';}
+function fmtNum(n){n=Math.floor(n||0);if(window.Beautify)try{return Beautify(n);}catch(e){}return n>=1e6?n.toExponential(2):String(n).replace(/\B(?=(\d{3})+(?!\d))/g,',');}
+async function showChooser(code,meta,profs){
+	var mine=lsGet('ccmp-prof-'+code), online={};
+	try{var pl=(await DB.get('rooms/'+code+'/players'))||{},now=DB.now();for(var k in pl){if(pl[k]&&pl[k].prof&&now-pl[k].t<30000)online[pl[k].prof]=1;}}catch(e){}
+	var ids=Object.keys(profs).sort(function(a,b){return (a===mine?-1:b===mine?1:0)||(profs[b].last||0)-(profs[a].last||0);});
+	var box=$('ccmp-choose'), h='<h2>Who are you in '+esc(meta.name)+'?</h2><div class="plist">';
+	ids.forEach(function(id){
+		var p=profs[id], st=p.stats||{};
+		h+='<button class="pbtn'+(id===mine?' mine':'')+'" data-id="'+esc(id)+'">'+(online[id]?'<span class="tag">playing now</span>':id===mine?'<span class="tag">you, last time</span>':'')+
+			'<b>'+esc(p.name)+'</b><small>last played '+fmtAgo(p.last)+' &middot; '+fmtTime(st.time)+' played &middot; '+fmtNum(st.clicks)+' clicks &middot; '+fmtNum(st.golden)+' golden cookies</small></button>';
+	});
+	h+='</div><label for="ccmp-newname">Or join as a new player</label><input id="ccmp-newname" maxlength="20" placeholder="Baker name" value="'+esc(nameInput.value)+'">'+
+		'<button id="ccmp-newp">Join as a new player</button><a class="back" id="ccmp-back">&larr; back</a>';
+	box.innerHTML=h; box.style.display='block';
+	document.querySelector('#ccmp-lobby .row').style.display='none';
+	Array.prototype.forEach.call(box.querySelectorAll('.pbtn'),function(b){b.onclick=function(){
+		var id=b.getAttribute('data-id');
+		box.querySelectorAll('button').forEach(function(x){x.disabled=true;});
+		enterRoom(code,meta.name,profs[id].name,false,id);
+	};});
+	var nn=$('ccmp-newname');
+	var addNew=async function(){
+		var n=nn.value.trim(); if (!n){msg('Pick a name first.');nn.focus();return;}
+		lsSet('ccmp-name',n); nameInput.value=n;
+		box.querySelectorAll('button').forEach(function(x){x.disabled=true;});
+		enterRoom(code,meta.name,n,false,await newProfile(code,n));
+	};
+	$('ccmp-newp').onclick=addNew;
+	nn.addEventListener('keydown',function(e){if(e.key==='Enter')addNew();});
+	$('ccmp-back').onclick=function(){box.style.display='none';document.querySelector('#ccmp-lobby .row').style.display='';lockLobby(false);};
 }
 $('ccmp-create').onclick=create;
 $('ccmp-join').onclick=join;
@@ -439,8 +505,8 @@ var GAME_HTML=
 var R=null; // room runtime
 function P(sub){return 'rooms/'+R.code+(sub?'/'+sub:'');}
 
-async function enterRoom(code,roomName,playerName,fresh){
-	R={code:code,name:roomName,player:playerName,fresh:fresh,
+async function enterRoom(code,roomName,playerName,fresh,prof){
+	R={code:code,name:roomName,player:playerName,fresh:fresh,prof:prof||null,st:{},playMs:0,lastTick:Date.now(),wRemote:0,
 		isHost:false,ready:false,loading:false,remote:0,depth:0,pd:0,capD:0,capT:0,effort:effortLevel(),clickC:0,clickE:0,clickH:0,bc:null,heraldTry:0,
 		seq:0,applied:{},log:[],loadedRev:0,simple:0,dirty:false,lastPublish:0,lastAutosave:0,
 		clk:0,hand:0,mismatch:0,waitFresh:false,waitFreshAt:0,waitFreshFrom:0,pendingLoad:false,
@@ -449,19 +515,25 @@ async function enterRoom(code,roomName,playerName,fresh){
 		win:null,lastInput:0,mouseDown:false,lastLoadAt:Date.now(),wMis:0,wPopped:{},wSpawned:{},mgQueue:[],mgQueueT:0,permLast:undefined,forcedSince:0};
 	addRecent(code,roomName);
 	sessionStorage.setItem('ccmp-auto',code);
+	if (prof){
+		lsSet('ccmp-prof-'+code,prof); sessionStorage.setItem('ccmp-prof-'+code,prof);
+		DB.update(P('profiles/'+prof),{name:playerName,last:DB.now()});
+		stat('sessions',1);
+	}
 	history.replaceState(null,'',location.origin+location.pathname+location.search+'#'+code); // absolute: <base> points elsewhere
 	document.title=roomName+' - Cookie Clicker Rooms';
 	loading('Joining room '+code+'…');
 
 	// presence
 	var me=P('players/'+PID);
-	await DB.set(me,{name:playerName,t:DB.now(),joined:DB.now(),v:!document.hidden,hs:document.hidden?DB.now():0,ef:R.effort});
+	await DB.set(me,{name:playerName,t:DB.now(),joined:DB.now(),v:!document.hidden,hs:document.hidden?DB.now():0,ef:R.effort,prof:R.prof||''});
 	DB.onDisconnectRemove(me);
 	R.hiddenSince=document.hidden?DB.now():0;
-	var presence=function(){return {t:DB.now(),name:playerName,v:!document.hidden,hs:R.hiddenSince||0,ef:R.effort};};
-	R.presence=function(){DB.update(me,presence());};
-	setInterval(function(){DB.update(me,presence());},10000);
+	var presence=function(){return {t:DB.now(),name:playerName,v:!document.hidden,hs:R.hiddenSince||0,ef:R.effort,prof:R.prof||''};};
+	R.presence=function(){if(!R.leaving)DB.update(me,presence());};
+	setInterval(function(){if(!R.leaving)DB.update(me,presence());},10000);
 	document.addEventListener('visibilitychange',function(){
+		if (R.leaving) return;
 		R.hiddenSince=document.hidden?(R.hiddenSince||DB.now()):0;
 		DB.update(me,presence());
 	});
@@ -735,9 +807,21 @@ function send(a){
 	DB.push(P('actions'),a);
 	feedAction(a,true);
 }
+function stat(k,n){if(R&&R.prof&&n)R.st[k]=(R.st[k]||0)+n;}
+function flushStats(){
+	if (!R || !R.prof) return;
+	var secs=Math.floor(R.playMs/1000); if (secs>0){R.playMs-=secs*1000;stat('time',secs);}
+	var d=R.st, any=false; for (var k in d){any=true;break;}
+	if (!any) return;
+	R.st={};
+	DB.inc(P('profiles/'+R.prof+'/stats'),d);
+	DB.update(P('profiles/'+R.prof),{last:DB.now()});
+}
 function sendClicks(){
 	if (!R || !R.ready) return;
 	var dc=Game.cookieClicks-R.clk, dh=Game.handmadeCookies-R.hand;
+	if (dc>0) stat('clicks',dc);
+	if (dh>0 || R.clickE) stat('clickCookies',Math.max(0,(R.clickE||0)+dh-(R.clickH||0)));
 	R.clk=Game.cookieClicks; R.hand=Game.handmadeCookies;
 	var a={k:'c',n:Math.max(0,dc),a:Math.max(0,dh)};
 	// everything the big cookie clicks changed in the bank, extras from JNE etc. included
@@ -845,7 +929,7 @@ function installHooks(){
 				finally{
 					R.depth--;
 					var d=this.amount-before;
-					if (d&&R.ready){var act={k:'b',id:this.id,d:d};if(d>0)act.m=cb-Game.cookies;send(act);}
+					if (d&&R.ready){var act={k:'b',id:this.id,d:d};if(d>0){act.m=cb-Game.cookies;stat('buildings',d);}send(act);}
 				}
 			};
 		});
@@ -857,7 +941,7 @@ function installHooks(){
 		var r=ub.apply(this,arguments);
 		if (!R.remote && R.ready && !was && this.bought){
 			if (this.pool==='prestige') send({k:'hu',id:this.id});
-			else if (this.priceLumps<=0) send({k:'u',id:this.id,m:cb-Game.cookies});
+			else if (this.priceLumps<=0){send({k:'u',id:this.id,m:cb-Game.cookies});stat('upgrades',1);}
 		}
 		return r;
 	};
@@ -903,7 +987,7 @@ function installHooks(){
 	});
 	document.addEventListener('mousedown',function(){R.mouseDown=true;},true);
 	window.addEventListener('mouseup',function(){R.mouseDown=false;},true);
-	window.addEventListener('pagehide',function(){if(R.isHost)publishSave(false,'leave');});
+	window.addEventListener('pagehide',function(){flushStats();if(R.isHost)publishSave(false,'leave');});
 }
 
 /* Locked achievements keep their "?" icon, "???" name and "Locked" tag, but the tooltip
@@ -927,7 +1011,7 @@ function installAchievementHints(){
    input event; the difference is sent to everyone as one action, so
    players never overwrite each other's bakery.
    ==================================================================== */
-var NO_RECORD='#ccmp-panel, #bigCookie';
+var NO_RECORD='#ccmp-panel, #ccmp-stats, #bigCookie';
 var SCAL_ADD=['cookies','cookiesEarned','lumps','lumpsTotal','heavenlyChips','heavenlyChipsSpent'];
 var SCAL_SET=['lumpT','lumpCurrentType','lumpRefill','dragonLevel','dragonAura','dragonAura2','santaLevel','elderWrath','pledges','pledgeT',
 	'researchT','nextResearch','milkType','bgType','chimeType','wrinklersPopped','reindeerClicked','goldenClicks','goldenClicksLocal',
@@ -1197,12 +1281,16 @@ function winStart(e){
 	R.lastInput=Date.now();
 	if (e.type==='keydown' && (e.repeat || MOD_KEYS[e.key])) return;
 	if (R.win || R.loading || ascending()) return;
-	R.win={s0:snap(),simple:R.simple};
+	R.win={s0:snap(),simple:R.simple,sp:spellsCast(),lt:+Game.lumpsTotal||0};
 	later(winEnd,0); // in case the game stopped the event from reaching the window
 }
+function spellsCast(){var M=Game.Objects['Wizard tower']&&Game.Objects['Wizard tower'].minigame;return M&&+M.spellsCastTotal||0;}
 function winEnd(){
 	var w=R&&R.win; if (!w) return;
 	R.win=null;
+	var sp=spellsCast()-w.sp, lt=(+Game.lumpsTotal||0)-w.lt;
+	if (sp>0) stat('spells',sp);
+	if (lt>0) stat('lumps',lt);
 	if (R.simple!==w.simple) return; // already sent as a click/buy/upgrade action
 	sendPatch(diff(w.s0,snap()));
 }
@@ -1273,6 +1361,7 @@ function installShimmerSync(){
 		Game.Popup=function(t){if(!txt)txt=t;return Pop.apply(this,arguments);};
 		try{op.call(this,e);}
 		finally{Game.Popup=Pop;}
+		if (R.ready && !R.popBy && this.force!=='cookie storm drop') stat(this.type==='golden'?'golden':this.type==='reindeer'?'reindeer':'shimmers',1); // caught on this screen
 		if (R.ready && R.isHost && this.ccmpSid)
 			fx({k:'popped',sid:this.ccmpSid,by:R.popBy||PID,name:R.popName||R.player,txt:txt,type:this.type,force:this.force||''});
 	};
@@ -1412,7 +1501,7 @@ function onFx(key,m){
 	if (R.isHost){
 		if (m.k==='pop') hostPop(m);
 		else if (m.k==='req') hostSpawn(m);
-		else if (m.k==='wpop'){var w=Game.wrinklers[m.id];if(w&&w.phase>0){w.hp=-10;R.wPopBy=m.name;}}
+		else if (m.k==='wpop'){var w=Game.wrinklers[m.id];if(w&&w.phase>0){w.hp=-10;R.wPopBy=m.name;R.wRemote++;}}
 		else if (m.k==='wspawn'){
 			var nw=Game.wrinklers[m.id];
 			if (nw && nw.phase===0){Game.SpawnWrinkler(nw);nw.type=m.type||0;if(nw.type==1)nw.hp=Game.wrinklerHP*3;}
@@ -1423,6 +1512,7 @@ function onFx(key,m){
 	if (m.k==='spawn') makeMirror(m);
 	else if (m.k==='gone') removeMirror(m.sid);
 	else if (m.k==='popped'){
+		if (m.by===PID && m.force!=='cookie storm drop') stat(m.type==='golden'?'golden':m.type==='reindeer'?'reindeer':'shimmers',1);
 		removeMirror(m.sid);
 		var pos=R.fxPos[m.sid];
 		if (m.txt && pos) Game.Popup(m.txt,pos.x+pos.w/2,pos.y);
@@ -1476,8 +1566,12 @@ function installWrinklerSync(){
 			// a pop needs a wrinkler that is nearly burst, or a click on the one under the mouse
 			var soon=false, W=Game.wrinklers;
 			for (var wi=0;wi<W.length;wi++){var w=W[wi];if(w.phase>0&&(w.hp<=1.3||(Game.Click&&w.selected))){soon=true;break;}}
-			if (soon && !R.win) return withPatch(function(){return uw.apply(self,args);});
-			return uw.apply(self,args);
+			var wp0=Game.wrinklersPopped, res;
+			if (soon && !R.win) res=withPatch(function(){return uw.apply(self,args);});
+			else res=uw.apply(self,args);
+			var wd=Game.wrinklersPopped-wp0;
+			if (wd>0){var fromOthers=Math.min(wd,R.wRemote);R.wRemote-=fromOthers;stat('wrinklers',wd-fromOthers);}
+			return res;
 		}
 		// not the host: popping is decided by the host, so undo what a local pop gave
 		var pre=Game.wrinklers.map(function(w){return w.phase;});
@@ -1485,7 +1579,7 @@ function installWrinklerSync(){
 		var r=uw.apply(self,args);
 		var popped=false;
 		Game.wrinklers.forEach(function(w,i){
-			if (pre[i]>0 && w.phase===0){popped=true;R.wPopped[w.id]=Date.now();fx({k:'wpop',id:w.id,name:R.player});}
+			if (pre[i]>0 && w.phase===0){popped=true;R.wPopped[w.id]=Date.now();fx({k:'wpop',id:w.id,name:R.player});stat('wrinklers',1);}
 		});
 		if (popped){Game.cookies=keep.c;Game.cookiesEarned=keep.e;Game.wrinklersPopped=keep.p;}
 		return r;
@@ -1608,6 +1702,8 @@ function startSync(){
 
 function tick(){
 	if (!R.ready || R.loading) return;
+	var tn=Date.now(); if (!document.hidden) R.playMs+=Math.min(tn-R.lastTick,5000); R.lastTick=tn;
+	if (tn-(R.lastFlush||0)>15000){R.lastFlush=tn;flushStats();}
 	wrapSpawnConditions();
 	sendClicks();
 	// permanent upgrade slots are picked on the heavenly screen, where nothing else is recorded
@@ -1888,6 +1984,32 @@ function renderCursors(){
 	for (var k in R.curEls) if (!seen[k]) R.curEls[k].style.display='none';
 }
 
+/* Player stats window (from the room's players; your own numbers include what hasn't been saved yet) */
+var STAT_COLS=[['time','Time played',fmtTime],['sessions','Visits',fmtNum],['clicks','Cookie clicks',fmtNum],['clickCookies','Cookies from clicking',fmtNum],
+	['golden','Golden cookies',fmtNum],['reindeer','Reindeer',fmtNum],['shimmers','Other catches',fmtNum],['buildings','Buildings bought',fmtNum],
+	['upgrades','Upgrades bought',fmtNum],['spells','Spells cast',fmtNum],['lumps','Sugar lumps',fmtNum],['wrinklers','Wrinklers popped',fmtNum]];
+function toggleStats(){
+	var el=$('ccmp-stats');
+	if (el){el.remove();if(R.statsOff){R.statsOff();R.statsOff=null;}return;}
+	el=document.createElement('div'); el.id='ccmp-stats'; document.body.appendChild(el);
+	R.statsOff=DB.on(P('profiles'),function(all){R.profiles=all||{};drawStats();});
+}
+function drawStats(){
+	var el=$('ccmp-stats'); if (!el) return;
+	var all=R.profiles||{}, online={}, pl=R.players||{}, now=DB.now();
+	for (var k in pl) if (pl[k]&&pl[k].prof&&now-pl[k].t<30000) online[pl[k].prof]=1;
+	var ids=Object.keys(all).sort(function(a,b){return ((all[b].stats||{}).time||0)-((all[a].stats||{}).time||0);});
+	var h='<span class="x" id="ccmp-statsx">&times;</span><h3>Players of '+esc(R.name)+'</h3><table><tr><th>Player</th>'+STAT_COLS.map(function(c){return '<th>'+c[1]+'</th>';}).join('')+'<th>Last played</th></tr>';
+	ids.forEach(function(id){
+		var p=all[id], st=Object.assign({},p.stats||{});
+		if (id===R.prof){for (var k in R.st) st[k]=(st[k]||0)+R.st[k]; st.time=(st.time||0)+Math.floor(R.playMs/1000);}
+		h+='<tr><td><span class="dot" style="background:'+(online[id]?'#8ef05a':'#555')+';display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;"></span>'+esc(p.name)+(id===R.prof?' (you)':'')+'</td>'+
+			STAT_COLS.map(function(c){return '<td>'+c[2](st[c[0]]||0)+'</td>';}).join('')+'<td>'+(online[id]?'now':fmtAgo(p.last))+'</td></tr>';
+	});
+	el.innerHTML=h+'</table>';
+	$('ccmp-statsx').onclick=toggleStats;
+}
+
 /* ====================================================================
    In-game room panel (players, activity, chat)
    ==================================================================== */
@@ -1901,6 +2023,7 @@ function buildPanel(){
 			'<div class="pl" id="ccmp-players"></div>'+
 			'<div class="feed" id="ccmp-feed"></div>'+
 			'<input id="ccmp-chat" maxlength="200" placeholder="Chat… (Enter to send)">'+
+			'<div class="btns"><a id="ccmp-statsbtn">Player stats</a></div>'+
 			'<div class="btns"><a id="ccmp-copy">Copy link</a><a id="ccmp-resync" title="Full resync (Alt+P)">Resync (Alt+P)</a><a id="ccmp-leave">Leave room</a></div>'+
 			'<label class="opt"><input type="checkbox" id="ccmp-curopt"'+(cursorsOn()?' checked':'')+'> Show other players\' cursors</label>'+
 			'<label class="opt" title="How often your game checks that it matches the room, and reloads it if not. Higher keeps you closer in step but can stutter; Extreme reloads the whole bakery every 1-2 seconds.">Sync effort <select id="ccmp-effort">'+
@@ -1924,11 +2047,15 @@ function buildPanel(){
 	});
 	$('ccmp-chat').addEventListener('keyup',function(e){e.stopPropagation();});
 	$('ccmp-resync').onclick=function(){resync();};
+	$('ccmp-statsbtn').onclick=function(){toggleStats();};
 	$('ccmp-copy').onclick=function(){
 		var url=location.href.split('#')[0]+'#'+R.code;
 		(navigator.clipboard?navigator.clipboard.writeText(url):Promise.reject()).then(function(){sys('Invite link copied.');},function(){prompt('Invite link:',url);});
 	};
 	$('ccmp-leave').onclick=async function(){
+		R.leaving=true;
+		flushStats();
+		sessionStorage.removeItem('ccmp-prof-'+R.code);
 		if (R.isHost) await publishSave(false,'leave').catch(function(){});
 		await DB.remove(P('players/'+PID)).catch(function(){});
 		await DB.remove(P('cursors/'+PID)).catch(function(){});
@@ -1966,7 +2093,7 @@ function feedAction(a,mine){
 function chatLine(m){feedLine('<b style="color:'+colorFor(m.p||'')+'">'+esc(m.name)+':</b> '+esc(m.msg));}
 
 /* reloading the page while in a room jumps straight back in */
-if (hashCode && nameInput.value && sessionStorage.getItem('ccmp-auto')===hashCode) later(join,0);
+if (hashCode && sessionStorage.getItem('ccmp-auto')===hashCode) later(join,0);
 else if (hashCode && nameInput.value) later(function(){$('ccmp-join').focus();},0);
 else if (!nameInput.value) nameInput.focus();
 
