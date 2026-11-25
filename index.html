@@ -121,6 +121,12 @@ window.CCMP_SETTINGS = {
 #ccmp-panel .btns a{flex:1;text-align:center;padding:4px;border:1px solid #6b4223;border-radius:4px;color:#ffd9a0;cursor:pointer;text-decoration:none;}
 #ccmp-panel .btns a:hover{border-color:#e0a050;}
 #ccmp-panel .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;}
+#ccmp-panel .opt{display:flex;align-items:center;gap:5px;margin-top:6px;color:#cdb08d;cursor:pointer;user-select:none;}
+#ccmp-panel .opt input{width:auto;margin:0;}
+#ccmp-cursors{position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:100000000;overflow:hidden;}
+#ccmp-cursors .cur{position:absolute;left:0;top:0;transition:transform .12s linear;will-change:transform;}
+#ccmp-cursors .cur svg{display:block;filter:drop-shadow(0 1px 1px rgba(0,0,0,.7));}
+#ccmp-cursors .cur span{position:absolute;left:14px;top:16px;padding:1px 5px;border-radius:3px;font:bold 11px Tahoma,Verdana,sans-serif;color:#1a0d04;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.6);}
 </style>
 </head>
 <body>
@@ -1506,6 +1512,7 @@ function startSync(){
 		if (r.force || (R.waitFresh && r.t>=R.waitFreshFrom)) loadLatest();
 	}));
 	R.unsub.push(DB.on(P('live'),onLive));
+	startCursors();
 	R.unsub.push(DB.on(P('players'),function(p){
 		var old=R.players||{};
 		R.players=p||{};R.playersLoaded=true;renderPlayers();
@@ -1558,12 +1565,15 @@ function hostTick(){
 	var now=Date.now();
 	if (now-R.heraldTry>600000){R.heraldTry=now;fetchHeralds();}
 	if (ascending()) return;
+	// a buff started or ended: tell everyone now instead of at the next 2-second update
+	var bsig=Object.keys(Game.buffs).sort().join('|');
+	if (bsig!==R.buffSig && now-lastLive>250) lastLive=0; // (too soon after the last one: the next tick sends it)
 	if (now-lastLive>2000){
-		lastLive=now;
+		lastLive=now; R.buffSig=bsig;
 		DB.set(P('live'),{by:PID,t:DB.now(),vec:R.applied,c:Game.cookies,e:Game.cookiesEarned,
 			b:Game.ObjectsById.map(function(o){return o.amount;}).join(','),
 			u:Game.UpgradesOwned,a:Game.AchievementsOwned,r:Game.resets,s:Game.season,l:Math.floor(Game.lumps),
-			w:worldFp(),wr:wrinklerState(),h:Game.heralds,st:shimmerTimers(),mv:movingShimmers()});
+			w:worldFp(),wr:wrinklerState(),h:Game.heralds,st:shimmerTimers(),mv:movingShimmers(),bf:buffState()});
 	}
 	if (now-R.lastPublish>30000){publishSave(false,'autosave');DB.update(P('meta'),{t:DB.now()});}
 	if (now-lastClean>60000){
@@ -1575,6 +1585,37 @@ function hostTick(){
 	}
 }
 
+/* Buffs: the ★ player's list is the truth. Whatever started them (a click, a spell, a JNE
+   timer...), everyone gets them within a moment, with the same time left. */
+function buffState(){
+	var out=[];
+	for (var n in Game.buffs){
+		var f=Game.buffs[n]; if (!f || !f.type) continue;
+		var args=[f.arg1,f.arg2,f.arg3].map(function(v){return (typeof v==='number'&&!isFinite(v))||v===undefined?null:v;});
+		out.push([n,f.type.name,f.maxTime,f.time,JSON.stringify(args)]);
+	}
+	return out;
+}
+function syncBuffs(list,t){
+	var late=Math.max(0,(DB.now()-t)/1000*Game.fps), seen={};
+	R.remote++;
+	try{
+		list.forEach(function(x){
+			var n=x[0], time=x[3]-late, cur=Game.buffs[n], args=[];
+			seen[n]=1;
+			if (time<=1) return;
+			try{args=JSON.parse(x[4]||'[]')||[];}catch(e){}
+			if (!cur){
+				if (!Game.buffTypesByName[x[1]]) return;
+				try{Game.gainBuff(x[1],time/Game.fps,args[0],args[1],args[2]);}catch(e){return;}
+				cur=Game.buffs[n]; if (!cur) return;
+				cur.maxTime=x[2]; cur.time=time;
+			}else if (Math.abs(cur.time-time)>Game.fps*2){cur.time=time;cur.maxTime=x[2];}
+		});
+		// a buff the ★ player doesn't have: it ended there (all actions are accounted for, see onLive)
+		for (var n in Game.buffs) if (!seen[n]) Game.buffs[n].time=0;
+	}finally{R.remote--;}
+}
 function sameVec(a,b){
 	a=a||{};b=b||{};
 	var k={},i;for(i in a)k[i]=1;for(i in b)k[i]=1;
@@ -1588,6 +1629,7 @@ function onLive(L){
 	if (typeof L.h==='number' && (L.h!==Game.heralds || !Game.externalDataLoaded)) setHeralds(L.h);
 	applyWrinklers(L.wr);
 	if (!sameVec(L.vec,R.applied)){R.mismatch=0;return;} // actions still on their way
+	if (L.bf) syncBuffs(L.bf,L.t);
 	if (L.w && L.w!==worldFp()){
 		if (++R.wMis>=2 && idle() && Date.now()-R.lastLoadAt>30000){R.wMis=0;requestFresh();}
 	}else R.wMis=0;
@@ -1666,6 +1708,121 @@ function setHost(b){
 }
 
 /* ====================================================================
+   Other players' cursors
+   A position is sent relative to the part of the game under the mouse
+   (store, buildings, big cookie...), and inside scrolling parts relative
+   to their content, so it points at the same thing on every screen size.
+   ==================================================================== */
+var CUR_AREAS=['store','sectionRight','rows','centerArea','sectionMiddle','sectionLeft','topBar','ascend','game'];
+function cursorsOn(){return lsGet('ccmp-cursors')!=='0';}
+function scrolls(el){
+	if (el.scrollHeight<=el.clientHeight+2) return false;
+	var o=getComputedStyle(el).overflowY; return o==='auto'||o==='scroll';
+}
+var CUR_SKIP=/^(ccmp-|tooltip|prompt|particles|sparkles|notes|buff\d)/;
+function areaPos(x,y,el){
+	var area=null, content=false;
+	for (var n=el;n&&n!==document.body;n=n.parentElement){
+		if (!n.id || n.id.indexOf('ccmp-')===0) continue;
+		if (scrolls(n)){area=n;content=true;break;} // a scrolling part: position inside its content
+		if (!area && CUR_AREAS.indexOf(n.id)!==-1) area=n;
+	}
+	if (area){
+		var r=area.getBoundingClientRect();
+		if (r.width>0 && r.height>0) return content
+			? {a:area.id,c:1,x:(x-r.left)/r.width,y:y-r.top+area.scrollTop}
+			: {a:area.id,c:0,x:(x-r.left)/r.width,y:(y-r.top)/r.height};
+	}
+	return {a:'',c:0,x:x/Math.max(1,innerWidth),y:y/Math.max(1,innerHeight)};
+}
+// the exact thing under the mouse (a building, an upgrade, the big cookie, a garden tile...)
+// has the same id on every screen; the part of the game around it is the fallback
+function cursorPos(x,y,target){
+	var el=target&&target.nodeType===1?target:document.elementFromPoint(x,y), p={};
+	for (var n=el;n&&n!==document.body;n=n.parentElement){
+		if (!n.id || CUR_SKIP.test(n.id)) continue;
+		var r=n.getBoundingClientRect();
+		if (r.width<4 || r.height<4) continue;
+		p.e=n.id; p.ex=Math.round((x-r.left)/r.width*1000)/1000; p.ey=Math.round((y-r.top)/r.height*1000)/1000;
+		break;
+	}
+	var f=areaPos(x,y,el);
+	p.a=f.a; p.c=f.c; p.x=Math.round(f.x*10000)/10000; p.y=f.c?Math.round(f.y*10)/10:Math.round(f.y*10000)/10000;
+	return p;
+}
+function visibleIn(el,y){ // not scrolled out of view in a scrolling part around it
+	for (var n=el.parentElement;n&&n!==document.body;n=n.parentElement){
+		if (scrolls(n)){var r=n.getBoundingClientRect();if(y<r.top-2||y>r.bottom+2)return false;}
+	}
+	return true;
+}
+function cursorScreen(m){
+	var el=m.e?document.getElementById(m.e):null;
+	if (el){
+		var q=el.getBoundingClientRect();
+		if (q.width && q.height){var yy=q.top+m.ey*q.height;return {x:q.left+m.ex*q.width,y:yy,v:visibleIn(el,yy)};}
+	}
+	el=m.a?document.getElementById(m.a):null;
+	if (!el) return {x:m.x*innerWidth,y:m.y*innerHeight,v:true};
+	var r=el.getBoundingClientRect();
+	if (!r.width || !r.height) return null; // that part isn't shown here
+	if (m.c){var y=r.top+m.y-el.scrollTop;return {x:r.left+m.x*r.width,y:y,v:y>=r.top-2&&y<=r.bottom+2};}
+	return {x:r.left+m.x*r.width,y:r.top+m.y*r.height,v:true};
+}
+function startCursors(){
+	var me=P('cursors/'+PID), mx=-1, my=-1, mt=null, moved=false, gone=true;
+	DB.onDisconnectRemove(me);
+	document.addEventListener('mousemove',function(e){mx=e.clientX;my=e.clientY;mt=e.target;moved=true;},{passive:true,capture:true});
+	document.addEventListener('scroll',function(){if(mx>=0)moved=true;renderCursors();},{passive:true,capture:true});
+	var hide=function(){if(!gone){gone=true;DB.set(me,{h:1,t:DB.now()});}};
+	document.documentElement.addEventListener('mouseleave',hide);
+	window.addEventListener('blur',hide);
+	setInterval(function(){
+		if (!moved || mx<0) return;
+		moved=false; gone=false;
+		var p=cursorPos(mx,my,mt);
+		p.t=DB.now(); p.n=R.player;
+		DB.set(me,p);
+	},100);
+	setInterval(renderCursors,500); // windows resize, parts open and close
+	R.cursors={}; R.curEls={};
+	if (cursorsOn()) watchCursors();
+}
+function watchCursors(){
+	if (R.curOff) return;
+	R.curOff=DB.on(P('cursors'),function(all){R.cursors=all||{};renderCursors();});
+}
+function setCursors(on){
+	lsSet('ccmp-cursors',on?'1':'0');
+	if (on) watchCursors();
+	else {if (R.curOff){R.curOff();R.curOff=null;} R.cursors={}; renderCursors();}
+}
+function renderCursors(){
+	if (!R || !R.curEls) return;
+	var box=$('ccmp-cursors');
+	if (!box){box=document.createElement('div');box.id='ccmp-cursors';document.body.appendChild(box);}
+	var now=DB.now(), all=R.cursors||{}, seen={};
+	for (var id in all){
+		var m=all[id];
+		if (id===PID || !m || m.h || now-m.t>15000 || !(R.players||{})[id]) continue;
+		var p=cursorScreen(m); if (!p || !p.v) continue;
+		seen[id]=1;
+		var el=R.curEls[id];
+		if (!el){
+			el=document.createElement('div'); el.className='cur';
+			var c=colorFor(id);
+			el.innerHTML='<svg width="18" height="22" viewBox="0 0 18 22"><path d="M1 1 L1 17 L5.5 13 L9 21 L12 19.5 L8.5 12 L15 12 Z" fill="'+c+'" stroke="#1a0d04" stroke-width="1.5" stroke-linejoin="round"/></svg><span style="background:'+c+'"></span>';
+			box.appendChild(el); R.curEls[id]=el;
+		}
+		var nm=(m.n||(R.players[id]&&R.players[id].name)||'?');
+		if (el.lastChild.textContent!==nm) el.lastChild.textContent=nm;
+		el.style.display='';
+		el.style.transform='translate('+Math.round(p.x)+'px,'+Math.round(p.y)+'px)';
+	}
+	for (var k in R.curEls) if (!seen[k]) R.curEls[k].style.display='none';
+}
+
+/* ====================================================================
    In-game room panel (players, activity, chat)
    ==================================================================== */
 function buildPanel(){
@@ -1679,9 +1836,11 @@ function buildPanel(){
 			'<div class="feed" id="ccmp-feed"></div>'+
 			'<input id="ccmp-chat" maxlength="200" placeholder="Chat… (Enter to send)">'+
 			'<div class="btns"><a id="ccmp-copy">Copy link</a><a id="ccmp-resync" title="Full resync (Alt+P)">Resync (Alt+P)</a><a id="ccmp-leave">Leave room</a></div>'+
+			'<label class="opt"><input type="checkbox" id="ccmp-curopt"'+(cursorsOn()?' checked':'')+'> Show other players\' cursors</label>'+
 		'</div>';
 	document.body.appendChild(d);
 	$('ccmp-hd').onclick=function(){d.classList.toggle('min');lsSet('ccmp-panel-min',d.classList.contains('min')?'1':'0');};
+	$('ccmp-curopt').onchange=function(){setCursors(this.checked);};
 	$('ccmp-chat').addEventListener('keydown',function(e){
 		e.stopPropagation();
 		if (e.key==='Enter'){
@@ -1698,6 +1857,7 @@ function buildPanel(){
 	$('ccmp-leave').onclick=async function(){
 		if (R.isHost) await publishSave(false,'leave').catch(function(){});
 		await DB.remove(P('players/'+PID)).catch(function(){});
+		await DB.remove(P('cursors/'+PID)).catch(function(){});
 		sessionStorage.removeItem('ccmp-auto');
 		location.href=location.origin+location.pathname+location.search;
 	};
