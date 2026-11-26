@@ -144,6 +144,24 @@ window.CCMP_SETTINGS = {
 #ccmp-cursors .cur{position:absolute;left:0;top:0;transition:transform .12s linear;will-change:transform;}
 #ccmp-cursors .cur svg{display:block;filter:drop-shadow(0 1px 1px rgba(0,0,0,.7));}
 #ccmp-cursors .cur span{position:absolute;left:14px;top:16px;padding:1px 5px;border-radius:3px;font:bold 11px Tahoma,Verdana,sans-serif;color:#1a0d04;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.6);}
+#ccmp-cursors .hvw{position:absolute;left:16px;top:36px;}
+#ccmp-cursors .hvw.left{left:auto;right:4px;}
+#ccmp-cursors .hvw.up{top:auto;bottom:6px;}
+#ccmp-cursors .hv{width:250px;padding:6px 8px;background:rgba(0,0,0,.9);border:2px solid;border-radius:6px;color:#fff;font:11px Tahoma,Verdana,sans-serif;box-shadow:0 2px 6px rgba(0,0,0,.7);}
+#ccmp-cursors .hvi{float:left;width:36px;height:36px;margin:0 6px 2px 0;overflow:hidden;}
+#ccmp-cursors .hvi div{width:48px;height:48px;transform:scale(.75);transform-origin:0 0;}
+#ccmp-cursors .hvt b{display:block;font-size:13px;}
+#ccmp-cursors .hvt i{font-style:normal;font-weight:bold;}
+#ccmp-cursors .hvd{clear:both;padding-top:3px;opacity:.85;}
+#ccmp-cursors .hvd q{display:none;}
+#ccmp-cursors .crateol{position:absolute;left:0;top:0;border:3px solid;border-radius:6px;transition:transform .12s linear;}
+#ccmp-cursors .mk{position:absolute;left:0;top:0;}
+#ccmp-cursors .mkr{position:absolute;left:-16px;top:-16px;width:26px;height:26px;border:3px solid;border-radius:50%;animation:ccmpmk 1s ease-out infinite;}
+#ccmp-cursors .mkb{position:absolute;left:-3px;top:-3px;border:3px solid;border-radius:6px;animation:ccmpmkb 1s ease-in-out infinite;}
+#ccmp-cursors .mk span{position:absolute;padding:1px 5px;border-radius:3px;font:bold 11px Tahoma,Verdana,sans-serif;color:#1a0d04;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.6);}
+#ccmp-cursors .mkr i{position:absolute;left:8px;top:8px;width:10px;height:10px;border-radius:50%;border:1px solid #1a0d04;}
+@keyframes ccmpmk{0%{transform:scale(.6);opacity:1}100%{transform:scale(1.5);opacity:.35}}
+@keyframes ccmpmkb{0%,100%{opacity:1}50%{opacity:.45}}
 </style>
 </head>
 <body>
@@ -1912,17 +1930,43 @@ function cursorPos(x,y,target){
 	p.a=f.a; p.c=f.c; p.x=Math.round(f.x*10000)/10000; p.y=f.c?Math.round(f.y*10)/10:Math.round(f.y*10000)/10000;
 	return p;
 }
-function visibleIn(el,y){ // not scrolled out of view in a scrolling part around it
+// where a point really shows up: a scrolling part around it hides it once scrolled away; a part
+// that just cuts off its content (the upgrade box when it isn't opened up) holds it at its edge
+function clipAt(el,x,y){
+	var v=true, cut=false;
 	for (var n=el.parentElement;n&&n!==document.body;n=n.parentElement){
-		if (scrolls(n)){var r=n.getBoundingClientRect();if(y<r.top-2||y>r.bottom+2)return false;}
+		var r=null;
+		if (scrolls(n)){r=n.getBoundingClientRect();if(y<r.top-2||y>r.bottom+2)v=false;continue;}
+		var cs=getComputedStyle(n);
+		if (cs.overflowX==='visible' && cs.overflowY==='visible') continue;
+		r=n.getBoundingClientRect(); if (!r.width||!r.height) continue;
+		if (x<r.left||x>r.right||y<r.top||y>r.bottom){
+			x=Math.min(r.right-6,Math.max(r.left+6,x)); y=Math.min(r.bottom-6,Math.max(r.top+6,y)); cut=true;
+		}
 	}
-	return true;
+	return {x:x,y:y,v:v,cut:cut};
+}
+// store upgrades are numbered by their place in the store, which can differ between screens,
+// so the upgrade itself is sent and its crate looked up here
+function crateUpgrade(el){
+	for (var n=el;n&&n!==document.body;n=n.parentElement){
+		var m=n.id&&/^upgrade(\d+)$/.exec(n.id);
+		if (m && n.classList.contains('crate')){var u=Game.UpgradesInStore&&Game.UpgradesInStore[+m[1]];return u?u.id:null;}
+	}
+	return null;
+}
+function crateFor(uid){
+	var list=Game.UpgradesInStore||[];
+	for (var i=0;i<list.length;i++) if (list[i] && list[i].id===uid) return document.getElementById('upgrade'+i);
+	return null;
 }
 function cursorScreen(m){
-	var el=m.e?document.getElementById(m.e):null;
+	var el=null;
+	if (m.u!=null) el=crateFor(m.u);
+	else if (m.e) el=document.getElementById(m.e);
 	if (el){
 		var q=el.getBoundingClientRect();
-		if (q.width && q.height){var yy=q.top+m.ey*q.height;return {x:q.left+m.ex*q.width,y:yy,v:visibleIn(el,yy)};}
+		if (q.width && q.height){var c=clipAt(el,q.left+m.ex*q.width,q.top+m.ey*q.height);c.el=el;return c;}
 	}
 	el=m.a?document.getElementById(m.a):null;
 	if (!el) return {x:m.x*innerWidth,y:m.y*innerHeight,v:true};
@@ -1931,24 +1975,35 @@ function cursorScreen(m){
 	if (m.c){var y=r.top+m.y-el.scrollTop;return {x:r.left+m.x*r.width,y:y,v:y>=r.top-2&&y<=r.bottom+2};}
 	return {x:r.left+m.x*r.width,y:r.top+m.y*r.height,v:true};
 }
+// what's under the mouse now (the store is rebuilt often, which swaps the element out under a still mouse)
+function underMouse(){
+	var t=R.mouse.t;
+	if (!t || !t.isConnected) t=R.mouse.t=document.elementFromPoint(R.mouse.x,R.mouse.y);
+	return t;
+}
 function startCursors(){
-	var me=P('cursors/'+PID), mx=-1, my=-1, mt=null, moved=false, gone=true;
+	var me=P('cursors/'+PID), moved=false, gone=true;
+	R.mouse={x:-1,y:-1,t:null};
 	DB.onDisconnectRemove(me);
-	document.addEventListener('mousemove',function(e){mx=e.clientX;my=e.clientY;mt=e.target;moved=true;},{passive:true,capture:true});
-	document.addEventListener('scroll',function(){if(mx>=0)moved=true;renderCursors();},{passive:true,capture:true});
+	document.addEventListener('mousemove',function(e){R.mouse.x=e.clientX;R.mouse.y=e.clientY;R.mouse.t=e.target;moved=true;},{passive:true,capture:true});
+	document.addEventListener('mouseover',function(e){if(R.mouse.x>=0){R.mouse.t=e.target;moved=true;}},{passive:true,capture:true});
+	document.addEventListener('scroll',function(){if(R.mouse.x>=0)moved=true;renderCursors();},{passive:true,capture:true});
 	var hide=function(){if(!gone){gone=true;DB.set(me,{h:1,t:DB.now()});}};
 	document.documentElement.addEventListener('mouseleave',hide);
 	window.addEventListener('blur',hide);
 	setInterval(function(){
-		if (!moved || mx<0) return;
+		if (R.mouse.x>=0 && R.mouse.t && !R.mouse.t.isConnected) moved=true; // the store changed under the mouse
+		if (!moved || R.mouse.x<0) return;
 		moved=false; gone=false;
-		var p=cursorPos(mx,my,mt);
+		var t=underMouse(), p=cursorPos(R.mouse.x,R.mouse.y,t), u=crateUpgrade(t);
+		if (u!=null) p.u=u;
 		p.t=DB.now(); p.n=R.player;
 		DB.set(me,p);
 	},100);
-	setInterval(renderCursors,500); // windows resize, parts open and close
+	setInterval(renderCursors,500); // windows resize, parts open and close, prices change
 	R.cursors={}; R.curEls={};
 	if (cursorsOn()) watchCursors();
+	startMarks();
 }
 function watchCursors(){
 	if (R.curOff) return;
@@ -1959,29 +2014,127 @@ function setCursors(on){
 	if (on) watchCursors();
 	else {if (R.curOff){R.curOff();R.curOff=null;} R.cursors={}; renderCursors();}
 }
-function renderCursors(){
-	if (!R || !R.curEls) return;
+function overlayBox(){
 	var box=$('ccmp-cursors');
 	if (!box){box=document.createElement('div');box.id='ccmp-cursors';document.body.appendChild(box);}
+	return box;
+}
+// a small card for the upgrade someone is hovering: icon, name, price (green if you can afford it), what it does
+function upgradeCard(uid,color){
+	var u=Game.UpgradesById[uid]; if (!u) return '';
+	var price=0, ok=false;
+	try{price=Math.round(u.getPrice());ok=u.canBuy();}catch(e){}
+	var desc=String(u.ddesc||u.desc||'').replace(/<q>[\s\S]*?<\/q>/g,'');
+	var ic=u.icon||[0,0];
+	return '<div class="hv" style="border-color:'+color+'"><div class="hvi"><div style="'+(ic[2]?'':'background-image:url(img/icons.png);')+writeIcon(ic)+'"></div></div>'+
+		'<div class="hvt"><b>'+(u.dname||u.name)+'</b>'+(u.bought?'':'<i style="color:'+(ok?'#6f6':'#f66')+'">'+Beautify(price)+'</i>')+'</div>'+
+		(desc?'<div class="hvd">'+desc+'</div>':'')+'</div>';
+}
+function renderCursors(){
+	if (!R || !R.curEls) return;
+	var box=overlayBox();
 	var now=DB.now(), all=R.cursors||{}, seen={};
 	for (var id in all){
 		var m=all[id];
 		if (id===PID || !m || m.h || now-m.t>15000 || !(R.players||{})[id]) continue;
 		var p=cursorScreen(m); if (!p || !p.v) continue;
 		seen[id]=1;
-		var el=R.curEls[id];
+		var el=R.curEls[id], c=colorFor(id);
 		if (!el){
 			el=document.createElement('div'); el.className='cur';
-			var c=colorFor(id);
-			el.innerHTML='<svg width="18" height="22" viewBox="0 0 18 22"><path d="M1 1 L1 17 L5.5 13 L9 21 L12 19.5 L8.5 12 L15 12 Z" fill="'+c+'" stroke="#1a0d04" stroke-width="1.5" stroke-linejoin="round"/></svg><span style="background:'+c+'"></span>';
-			box.appendChild(el); R.curEls[id]=el;
+			el.innerHTML='<svg width="18" height="22" viewBox="0 0 18 22"><path d="M1 1 L1 17 L5.5 13 L9 21 L12 19.5 L8.5 12 L15 12 Z" fill="'+c+'" stroke="#1a0d04" stroke-width="1.5" stroke-linejoin="round"/></svg><span style="background:'+c+'"></span><div class="hvw"></div>';
+			el._ol=document.createElement('div'); el._ol.className='crateol'; el._ol.style.borderColor=c;
+			box.appendChild(el._ol); box.appendChild(el); R.curEls[id]=el;
 		}
-		var nm=(m.n||(R.players[id]&&R.players[id].name)||'?');
-		if (el.lastChild.textContent!==nm) el.lastChild.textContent=nm;
+		var nm=(m.n||(R.players[id]&&R.players[id].name)||'?'), nmEl=el.querySelector('span');
+		if (nmEl.textContent!==nm) nmEl.textContent=nm;
+		// the upgrade they're hovering
+		var card=m.u!=null?upgradeCard(m.u,c):'', w=el.querySelector('.hvw');
+		if (w._k!==card){w.innerHTML=card;w._k=card;}
+		w.className='hvw'+(p.x>innerWidth-300?' left':'')+(p.y>innerHeight-160?' up':'');
+		if (card && p.el && !p.cut){
+			var q=p.el.getBoundingClientRect();
+			el._ol.style.display=''; el._ol.style.transform='translate('+Math.round(q.left-3)+'px,'+Math.round(q.top-3)+'px)';
+			el._ol.style.width=Math.round(q.width)+'px'; el._ol.style.height=Math.round(q.height)+'px';
+		}else el._ol.style.display='none';
 		el.style.display='';
 		el.style.transform='translate('+Math.round(p.x)+'px,'+Math.round(p.y)+'px)';
 	}
-	for (var k in R.curEls) if (!seen[k]) R.curEls[k].style.display='none';
+	for (var k in R.curEls) if (!seen[k]){R.curEls[k].style.display='none';R.curEls[k]._ol.style.display='none';}
+}
+
+/* G: put a mark where your mouse is (on an upgrade, that upgrade). Everyone sees it for 10 seconds. */
+var MARK_MS=10000;
+function startMarks(){
+	R.marks={}; R.myMarks={}; R.markEls={};
+	DB.onDisconnectRemove(P('marks/'+PID));
+	DB.on(P('marks'),function(all){R.marks=all||{};renderMarks();});
+	document.addEventListener('keydown',onMarkKey,false);
+	setInterval(renderMarks,100);
+}
+function onMarkKey(e){
+	if (!R || !R.ready || e.repeat || e.altKey || e.ctrlKey || e.metaKey || e.code!=='KeyG') return;
+	var t=e.target, tag=t&&t.tagName;
+	if (tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||(t&&t.isContentEditable)) return; // typing in chat or a name box
+	if (!R.mouse || R.mouse.x<0) return;
+	var now=Date.now();
+	if (now-(R.lastMark||0)<250) return;
+	R.lastMark=now;
+	var mine=Object.keys(R.myMarks).sort();
+	while (mine.length>=5) dropMark(mine.shift()); // at most 5 of yours at once
+	var t=underMouse(), p=cursorPos(R.mouse.x,R.mouse.y,t), u=crateUpgrade(t);
+	if (u!=null) p.u=u;
+	p.t=DB.now(); p.n=R.player;
+	var k=now.toString(36)+Math.random().toString(36).slice(2,6);
+	R.myMarks[k]=p;
+	DB.set(P('marks/'+PID+'/'+k),p).catch(function(){});
+	setTimeout(function(){dropMark(k);},MARK_MS);
+	renderMarks();
+}
+function dropMark(k){
+	if (!R.myMarks[k]) return;
+	delete R.myMarks[k];
+	DB.remove(P('marks/'+PID+'/'+k)).catch(function(){});
+}
+function renderMarks(){
+	if (!R || !R.markEls) return;
+	var now=DB.now(), list=[], seen={}, box=null;
+	for (var id in R.marks||{}){
+		if (id===PID) continue; // yours are drawn from here, without waiting for the server
+		var ms=R.marks[id]||{};
+		for (var k in ms) list.push([id,k,ms[k]]);
+	}
+	for (var k2 in R.myMarks) list.push([PID,k2,R.myMarks[k2]]);
+	for (var i=0;i<list.length;i++){
+		var id=list[i][0], k=list[i][1], m=list[i][2], key=id+'/'+k;
+		if (!m || !m.t) continue;
+		var age=now-m.t; if (age>MARK_MS || age<-5000) continue;
+		var p=cursorScreen(m); if (!p || !p.v) continue;
+		seen[key]=1;
+		var el=R.markEls[key], c=colorFor(id);
+		if (!el){
+			box=box||overlayBox();
+			el=document.createElement('div'); el.className='mk';
+			var u=m.u!=null?Game.UpgradesById[m.u]:null;
+			el.innerHTML='<div class="mkr" style="border-color:'+c+';box-shadow:0 0 10px '+c+'"><i style="background:'+c+'"></i></div><div class="mkb" style="border-color:'+c+';box-shadow:0 0 10px '+c+'"></div>'+
+				'<span style="background:'+c+'">'+esc(m.n||'?')+(u?': '+(u.dname||u.name):'')+'</span>';
+			box.appendChild(el); R.markEls[key]=el;
+		}
+		var ring=el.firstChild, frame=ring.nextSibling;
+		if (m.u!=null && p.el && !p.cut){ // a frame around the upgrade
+			var q=p.el.getBoundingClientRect();
+			ring.style.display='none'; frame.style.display='';
+			frame.style.width=Math.round(q.width)+'px'; frame.style.height=Math.round(q.height)+'px';
+			el.style.transform='translate('+Math.round(q.left)+'px,'+Math.round(q.top)+'px)';
+			el.lastChild.style.top=Math.round(q.height+4)+'px'; el.lastChild.style.left='0';
+		}else{
+			ring.style.display=''; frame.style.display='none';
+			el.style.transform='translate('+Math.round(p.x)+'px,'+Math.round(p.y)+'px)';
+			el.lastChild.style.top='20px'; el.lastChild.style.left='-14px';
+		}
+		el.style.opacity=age>MARK_MS-2000?Math.max(0,(MARK_MS-age)/2000):1;
+	}
+	for (var key2 in R.markEls) if (!seen[key2]){R.markEls[key2].remove();delete R.markEls[key2];}
 }
 
 /* Player stats window (from the room's players; your own numbers include what hasn't been saved yet) */
@@ -2026,6 +2179,7 @@ function buildPanel(){
 			'<div class="btns"><a id="ccmp-statsbtn">Player stats</a></div>'+
 			'<div class="btns"><a id="ccmp-copy">Copy link</a><a id="ccmp-resync" title="Full resync (Alt+P)">Resync (Alt+P)</a><a id="ccmp-leave">Leave room</a></div>'+
 			'<label class="opt"><input type="checkbox" id="ccmp-curopt"'+(cursorsOn()?' checked':'')+'> Show other players\' cursors</label>'+
+			'<div class="opt" style="cursor:default">Press <b>G</b> to mark a spot or upgrade for everyone (10 s)</div>'+
 			'<label class="opt" title="How often your game checks that it matches the room, and reloads it if not. Higher keeps you closer in step but can stutter; Extreme reloads the whole bakery every 1-2 seconds.">Sync effort <select id="ccmp-effort">'+
 				EFFORT.map(function(e,i){return '<option value="'+i+'"'+(i===R.effort?' selected':'')+'>'+e.name+'</option>';}).join('')+'</select></label>'+
 		'</div>';
@@ -2059,6 +2213,7 @@ function buildPanel(){
 		if (R.isHost) await publishSave(false,'leave').catch(function(){});
 		await DB.remove(P('players/'+PID)).catch(function(){});
 		await DB.remove(P('cursors/'+PID)).catch(function(){});
+		await DB.remove(P('marks/'+PID)).catch(function(){});
 		sessionStorage.removeItem('ccmp-auto');
 		location.href=location.origin+location.pathname+location.search;
 	};
