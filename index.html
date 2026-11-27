@@ -216,7 +216,7 @@ window.CCMP_SETTINGS = {
    ==================================================================== */
 var later = window.setTimeout.bind(window); // our own timers, never recorded as a player's action
 // version of this page: goes up by one with every update
-var CCMP_VERSION = 23;
+var CCMP_VERSION = 24;
 var SET = window.CCMP_SETTINGS;
 var $ = function(id){return document.getElementById(id);};
 var sleep = function(ms){return new Promise(function(r){later(r,ms);});};
@@ -1344,7 +1344,7 @@ function installDelayedCapture(){
 	window.setTimeout=function(fn,ms){
 		if (typeof fn==='function' && R && R.ready && !R.remote && !R.loading && (R.win || R.capD || R.pd)){
 			var origin=R.capD?R.capT:Date.now(), depth=(R.capD||0)+1;
-			if (depth<=30 && Date.now()-origin<60000){
+			if (depth<=40 && (+ms||0)<=120000 && Date.now()-origin<20*60000){
 				var inner=fn;
 				fn=function(){
 					var self=this,args=arguments,pt=R.capT,pd=R.capD;
@@ -1814,6 +1814,7 @@ function startSync(){
 	}));
 	R.unsub.push(DB.on(P('live'),onLive));
 	R.unsub.push(DB.on(P('market'),onMarket));
+	R.unsub.push(DB.on(P('sim'),onSims));
 	startCursors();
 	R.unsub.push(DB.on(P('players'),function(p){
 		var old=R.players||{};
@@ -1849,6 +1850,7 @@ function tick(){
 	if (tn-(R.lastFlush||0)>15000){R.lastFlush=tn;flushStats();}
 	wrapSpawnConditions();
 	installMarketSync();
+	installGardenSync();
 	installPotionsSync();
 	sendClicks();
 	// permanent upgrade slots are picked on the heavenly screen, where nothing else is recorded
@@ -1870,6 +1872,7 @@ var lastLive=0,lastClean=0;
 function hostTick(){
 	var now=Date.now();
 	if (now-R.heraldTry>600000){R.heraldTry=now;fetchHeralds();}
+	if (!ascending()) shareSims(now);
 	if (ascending()) return;
 	// a buff started or ended: tell everyone now instead of at the next 2-second update
 	var bsig=Object.keys(Game.buffs).sort().join('|');
@@ -2012,6 +2015,60 @@ function setHost(b){
 		}
 	}
 	renderPlayers();
+}
+
+/* ====================================================================
+   Garden: only the ★ player's garden grows. Every screen used to grow its own with its own
+   random rolls (ages, mutations, weeds, bursting fungus), so plants existed on one screen and
+   not another. The ★ player's growth tick is recorded and sent to everyone like an action.
+   ==================================================================== */
+function installGardenSync(){
+	var b=Game.Objects['Farm'], M=b&&b.minigame;
+	if (!M || typeof M.logic!=='function' || !M.plot || M.stepT==null || M.ccmpWrapped) return;
+	M.ccmpWrapped=1;
+	var ol=M.logic;
+	M.logic=function(){
+		if (!R || !R.ready || R.loading || M.freeze) return ol.apply(this,arguments);
+		var now=Date.now();
+		if (now<Math.min(M.nextStep,now+M.stepT*1000)) return ol.apply(this,arguments); // no growth tick now
+		if (!R.isHost && R.hostPid){ // the ★ player's tick reaches us as an action
+			var keep=M.nextStep; M.nextStep=Infinity;
+			try{return ol.apply(this,arguments);}finally{M.nextStep=keep;}
+		}
+		var self=this,args=arguments;
+		return withPatch(function(){return ol.apply(self,args);});
+	};
+}
+/* Minigames that simulate on their own every second (JNE's Downline): everyone runs it, and the
+   ★ player's copy is shared every 30 seconds so the room doesn't drift apart. */
+var SIM_SHARE={'Fractal engine':30000};
+function shareSims(now){
+	R.simT=R.simT||{}; R.simLast=R.simLast||{};
+	for (var name in SIM_SHARE){
+		var b=Game.Objects[name]; if (!b || !b.minigame || b.level<1) continue;
+		if (now-(R.simT[name]||0)<SIM_SHARE[name]) continue;
+		R.simT[name]=now;
+		var str=withPanelsClosed(function(){return mgGet(b);});
+		if (str && str!==R.simLast[name]){R.simLast[name]=str;DB.set(P('sim/'+b.id),{t:DB.now(),by:PID,s:str});}
+	}
+}
+function onSims(all){
+	if (!all || !R) return;
+	R.simSeen=R.simSeen||{};
+	for (var id in all){
+		var x=all[id]; if (!x || !x.s || x.by===PID || R.simSeen[id]===x.t) continue;
+		R.simSeen[id]=x.t; applySim(+id,x);
+	}
+}
+function applySim(id,x){
+	if (!R.ready || R.isHost) return;
+	if (R.loading || R.mouseDown || R.win || R.pd || R.capD){later(function(){if(R.simSeen[id]===x.t)applySim(id,x);},500);return;}
+	var b=Game.ObjectsById[id]; if (!b || !b.minigame) return;
+	var cur=withPanelsClosed(function(){return mgGet(b);});
+	if (cur===x.s) return;
+	R.remote++;
+	try{mgSet(b,x.s);}catch(e){console.warn('[rooms] sim',e);}
+	finally{R.remote--;}
 }
 
 /* ====================================================================
