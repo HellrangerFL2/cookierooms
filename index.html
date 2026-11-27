@@ -1049,7 +1049,10 @@ function mgSet(b,str){
 	var M=b.minigame, seed=(b.name==='Farm'&&M)?M.seedSelected:null; // the seed this player is holding
 	try{
 		var api=window[JNE_MG[b.name]];
-		if (api && typeof api.applySaveData==='function') api.applySaveData(str);
+		if (api && typeof api.applySaveData==='function'){
+			if (b.name==='Alchemy lab') alcLoad(api,str);
+			else api.applySaveData(str);
+		}
 		else if (Game.isMinigameReady(b)){
 			if (b.minigame.reset) b.minigame.reset(true);
 			b.minigame.load(str);
@@ -1062,6 +1065,78 @@ function mgSet(b,str){
 }
 // whole numbers only, no timestamps: ignores magic regenerating, prices wobbling, clocks
 function ints(s){return (String(s||'').match(/-?\d+(\.\d+)?(e[+-]?\d+)?/gi)||[]).filter(function(n){return !/[.e]/i.test(n)&&Math.abs(+n)<1e9;}).join(',');}
+
+/* Alchemy lab (JNE): its save is encoded JSON. It also holds the brewing timers and a copy of
+   every buff with its time left, which change every second, so it gets its own comparison
+   and merge: reagents are counted up and down, everything else is taken when it changed. */
+function isAlc(b){return b && b.name==='Alchemy lab' && window.PotionsMinigame;}
+function alcDecode(s){try{var d=JSON.parse(decodeURIComponent(s));return d&&typeof d==='object'?d:null;}catch(e){return null;}}
+function alcSlot(x){return x?JSON.stringify([x.pid||'',x.r||[],x.fo||0,x.fom||0]):'-';}
+var ALC_SKIP={b:1,o:1,r:1,s:1}, ALC_ADD={tb:1,pb:1,tr:1,fd:1,ar:1};
+function alcKey(d){ // what the Alchemy lab holds, without timers, buffs or whether its panel is open
+	if (!d) return '';
+	var c={};for (var k in d) if (!ALC_SKIP[k]) c[k]=d[k];
+	c.r=d.r; c.s=(d.s||[]).map(alcSlot);
+	return JSON.stringify(c);
+}
+function alcDiff(a,b){
+	var da=alcDecode(a), db=alcDecode(b);
+	if (!da || !db) return mgDiff(a,b,false);
+	if (alcKey(da)===alcKey(db)) return null; // only timers moved
+	var x={alc:1,r:[],add:{},set:{}}, i, k;
+	var ra=da.r||[], rb=db.r||[];
+	for (i=0;i<rb.length;i++) if (ra[i]!==rb[i]) x.r.push([i,ra[i]==null?-1:ra[i],rb[i]]);
+	var sa=da.s||[], sb=db.s||[];
+	for (i=0;i<3;i++) if (alcSlot(sa[i])!==alcSlot(sb[i])) (x.s=x.s||{})[i]=sb[i]||null;
+	for (k in db){
+		if (ALC_SKIP[k] || JSON.stringify(da[k])===JSON.stringify(db[k])) continue;
+		if (ALC_ADD[k]) x.add[k]=(+db[k]||0)-(+da[k]||0); else x.set[k]=db[k];
+	}
+	return x;
+}
+function alcMerge(cur,x){
+	var d=alcDecode(cur); if (!d) return null;
+	d.r=d.r||[];
+	(x.r||[]).forEach(function(e){
+		var i=e[0], o=e[1], n=e[2], c=d.r[i];
+		if (n<0) return;                                  // never lock a reagent again
+		d.r[i]=(c==null||c<0||o<0)?n:Math.max(0,c+(n-o)); // found or used here plus there
+	});
+	for (var k in x.add) d[k]=(+d[k]||0)+x.add[k];
+	for (k in x.set) d[k]=x.set[k];
+	if (x.s){d.s=d.s||[null,null,null];for (var si in x.s) d.s[si]=x.s[si];}
+	return encodeURIComponent(JSON.stringify(d));
+}
+// loading the Alchemy lab would put back every buff in its save (with rounded timers; Venom of the
+// Basilisk even multiplies the wrinklers' cookies again) and stop reagent drops for 1.5 seconds
+function alcLoad(api,str){
+	var d=alcDecode(str), PM=window.PotionsM, keep={}, k;
+	if (d){d.b=[];str=encodeURIComponent(JSON.stringify(d));} // buffs are synced on their own
+	if (PM) for (k in PM) if (k.indexOf('_last')===0) keep[k]=Array.isArray(PM[k])?PM[k].slice():PM[k];
+	api.applySaveData(str);
+	if (PM){
+		for (k in keep) PM[k]=keep[k]; // what was already counted stays counted, nothing new is skipped
+		if (PM._loadTimer){clearTimeout(PM._loadTimer);PM._loadTimer=null;}
+		PM._loading=false;
+	}
+}
+/* Who finds a reagent: things every screen sees change (wrinklers, reindeer, sugar lumps, the season,
+   dragon auras, the pantheon, soil, brokers, the random find) are rolled by the ★ player's game only,
+   once for the room. What only the finder's screen sees (big cookie clicks, petting the dragon...)
+   is rolled there. Either way the reagent is sent to everyone right away. */
+var ALC_ROOM={wrinkler:1,reindeer:1,lump:1,season:1,dragon_aura:1,pantheon:1,random:1,soil_change:1,broker:1};
+function installPotionsSync(){
+	var PM=window.PotionsM; if (!PM || typeof PM._addReagent!=='function' || PM._addReagent.ccmp) return;
+	var orig=PM._addReagent;
+	PM._addReagent=function(id,amount,source){
+		var self=this,args=arguments;
+		if (!R || !R.ready || R.loading || R.remote) return orig.apply(self,args);
+		if (ALC_ROOM[source] && !R.isHost) return; // the ★ player's game rolls this one for everyone
+		if (R.win || R.pd || R.capD) return orig.apply(self,args); // already being recorded
+		return withPatch(function(){return orig.apply(self,args);});
+	};
+	PM._addReagent.ccmp=1;
+}
 
 // Minigame saves are merged number by number, so two players using the same minigame at
 // the same time keep both of their changes. A save is split into its numbers and the text
@@ -1180,6 +1255,7 @@ function diff(s0,s1){
 	for (k in s1.mg){
 		var m0=s0.mg[k], m1=s1.mg[k];
 		if (m0===undefined){(p.mg=p.mg||{})[k]={n:m1};n++;continue;}
+		if (m1!==m0 && isAlc(Game.ObjectsById[k])){var ad=alcDiff(m0,m1);if(ad){(p.mg=p.mg||{})[k]=ad;n++;}continue;}
 		if (m1!==m0 && (ints(m1)!==ints(m0) || skel(toks(m1))!==skel(toks(m0)))){(p.mg=p.mg||{})[k]=mgDiff(m0,m1,Game.ObjectsById[k]&&MG_SUM[Game.ObjectsById[k].name]);n++;}
 	}
 	if (s1.u!==s0.u){
@@ -1239,8 +1315,8 @@ function applyMg(mg){
 		if (k==='ca'){var c0=caGet(),c1=mgMerge(c0,mg[k]);if(c1!==c0)caSet(c1);continue;}
 		var bb=Game.ObjectsById[k]; if (!bb) continue;
 		var cur=withPanelsClosed(function(){return mgGet(bb);});
-		var mer=mgMerge(cur,mg[k]);
-		if (mer!==cur) mgSet(bb,mer);
+		var mer=mg[k].alc?alcMerge(cur,mg[k]):mgMerge(cur,mg[k]);
+		if (mer!=null && mer!==cur) mgSet(bb,mer);
 	}
 }
 function flushMgQueue(){
@@ -1630,7 +1706,7 @@ function hashStr(str){var h=5381;for(var i=0;i<str.length;i++)h=((h<<5)+h+str.ch
 function worldFp(){
 	var p=[];
 	withPanelsClosed(function(){Game.ObjectsById.forEach(function(b){
-		if (b.name!=='Fractal engine'){var m=mgGet(b);if(m)p.push(b.id+':'+ints(m));} // the Downline changes every second; the regular refresh covers it
+		if (b.name!=='Fractal engine'){var m=mgGet(b);if(m)p.push(b.id+':'+(b.name==='Bank'?bankFp(m):isAlc(b)?hashStr(alcKey(alcDecode(m))||ints(m)):ints(m)));} // the Downline changes every second; the regular refresh covers it
 		p.push(b.level);
 	});});
 	p.push(Math.floor(Game.lumps),Game.lumpCurrentType,Game.dragonLevel,Game.dragonAura,Game.dragonAura2,Game.santaLevel,Game.elderWrath,Game.AchievementsOwned,Object.keys(Game.buffs).sort().join(','));
@@ -1689,6 +1765,7 @@ function startSync(){
 		if (r.force || (R.waitFresh && r.t>=R.waitFreshFrom)) loadLatest();
 	}));
 	R.unsub.push(DB.on(P('live'),onLive));
+	R.unsub.push(DB.on(P('market'),onMarket));
 	startCursors();
 	R.unsub.push(DB.on(P('players'),function(p){
 		var old=R.players||{};
@@ -1723,6 +1800,8 @@ function tick(){
 	var tn=Date.now(); if (!document.hidden) R.playMs+=Math.min(tn-R.lastTick,5000); R.lastTick=tn;
 	if (tn-(R.lastFlush||0)>15000){R.lastFlush=tn;flushStats();}
 	wrapSpawnConditions();
+	installMarketSync();
+	installPotionsSync();
 	sendClicks();
 	// permanent upgrade slots are picked on the heavenly screen, where nothing else is recorded
 	var pj=JSON.stringify(Game.permanentUpgrades||[]);
@@ -1885,6 +1964,91 @@ function setHost(b){
 		}
 	}
 	renderPlayers();
+}
+
+/* ====================================================================
+   Stock market: only the ★ player's market moves. After every tick it
+   sends its prices and their history to everyone, so the graph is the
+   same on every screen, and reloading the bakery doesn't wipe it.
+   ==================================================================== */
+function bankM(){var b=Game.Objects['Bank'],M=b&&b.minigame;return M&&M.goodsById&&M.tick&&M.load?M:null;}
+function marketHist(M){
+	return {at:Date.now(),resets:Game.resets,ticks:M.ticks,tickT:M.tickT,lines:M.graphLines,cols:M.graphCols,
+		g:M.goodsById.map(function(it){return (it.vals||[]).slice();})};
+}
+function near(a,b){return Math.abs(a-b)<0.015;}
+// after the market was loaded from a save (which keeps only the current prices): put the history back
+function restoreMarket(M,k){
+	if (!k || k.resets!==Game.resets) return; // ascended since: a new market
+	var H=R.market&&R.market.g;
+	M.goodsById.forEach(function(it,i){
+		var h=H&&H[i], old=k.g[i];
+		if (h && h[4] && h[4].length && near(h[0],it.val)) it.vals=h[4].slice();   // the ★ player's history
+		else if (old && old.length && near(old[0],it.val)) it.vals=old.slice();     // our own, same price
+		else if (old && old.length) it.vals=[it.val].concat(old).slice(0,65);     // our own, plus the new price
+	});
+	M.ticks=Math.max(M.ticks||0,k.ticks||0); M.tickT=k.tickT||0;
+	M.graphLines=k.lines; M.graphCols=k.cols; // line style and colors are personal
+	try{M.setCols();M.checkGraphScale();}catch(e){}
+	M.toRedraw=2;
+}
+function installMarketSync(){
+	var M=bankM(); if (!M || M.ccmpWrapped) return;
+	M.ccmpWrapped=1;
+	var oReset=M.reset, oLoad=M.load, oTick=M.tick;
+	M.reset=function(){
+		if (R.ready && (!R.marketKeep || Date.now()-R.marketKeep.at>3000)) R.marketKeep=marketHist(M); // a load follows
+		M.ccmpResetting=1;
+		try{return oReset.apply(this,arguments);}finally{M.ccmpResetting=0;}
+	};
+	M.load=function(){
+		var k=(R.marketKeep && Date.now()-R.marketKeep.at<3000)?R.marketKeep:(R.ready?marketHist(M):null);
+		R.marketKeep=null;
+		var r=oLoad.apply(this,arguments);
+		if (k) restoreMarket(M,k);
+		return r;
+	};
+	M.tick=function(){
+		if (M.ccmpResetting || !R.ready) return oTick.apply(this,arguments);
+		if (!R.isHost && R.market && Date.now()-R.marketAt<150000) return; // the ★ player's market moves for everyone
+		var r=oTick.apply(this,arguments);
+		if (R.isHost) publishMarket();
+		return r;
+	};
+	if (!R.isHost && R.market) applyMarket(R.market);
+}
+function publishMarket(){
+	var M=bankM(); if (!M) return;
+	var r2=function(v){return Math.round(v*100)/100;};
+	DB.set(P('market'),{by:PID,t:DB.now(),n:M.ticks,tt:M.tickT,
+		g:M.goodsById.map(function(it){return [r2(it.val),Math.round(it.d*10000)/10000,it.mode,it.dur,(it.vals||[]).map(r2)];})});
+}
+function onMarket(m){
+	if (!m || !R) return;
+	R.market=m; R.marketAt=Date.now();
+	if (!R.ready || R.isHost || m.by===PID) return;
+	applyMarket(m);
+}
+function applyMarket(m){
+	var M=bankM(); if (!M || !m || !m.g) return;
+	if (R.loading || R.win || R.pd || R.capD){later(function(){if(R.market===m)applyMarket(m);},100);return;} // not in the middle of recording an action
+	var newTick=m.n!==M.ticks;
+	M.goodsById.forEach(function(it,i){
+		var g=m.g[i]; if (!g) return;
+		it.val=g[0]; it.d=g[1]; it.mode=g[2]; it.dur=g[3];
+		if (g[4] && g[4].length) it.vals=g[4].slice();
+		if (newTick) it.last=0; // a new tick: buying and selling are allowed again
+	});
+	M.ticks=m.n;
+	var spt=Game.fps*(M.secondsPerTick||60);
+	M.tickT=Math.min(spt-1,Math.max(0,(m.tt||0)+Math.round(Math.max(0,DB.now()-m.t)/1000*Game.fps)));
+	try{M.checkGraphScale();}catch(e){}
+	M.toRedraw=2;
+}
+// stock market prices aren't compared (they move on their own); what players own is
+function bankFp(m){
+	var M=bankM(); if (!M) return ints(m);
+	return M.officeLevel+'/'+M.brokers+'/'+M.goodsById.map(function(it){return it.stock;}).join('.');
 }
 
 /* ====================================================================
