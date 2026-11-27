@@ -216,7 +216,7 @@ window.CCMP_SETTINGS = {
    ==================================================================== */
 var later = window.setTimeout.bind(window); // our own timers, never recorded as a player's action
 // version of this page: goes up by one with every update
-var CCMP_VERSION = 24;
+var CCMP_VERSION = 25;
 var SET = window.CCMP_SETTINGS;
 var $ = function(id){return document.getElementById(id);};
 var sleep = function(ms){return new Promise(function(r){later(r,ms);});};
@@ -1523,7 +1523,11 @@ function installShimmerSync(){
 	proto.die=function(){
 		var r=od.apply(this,arguments);
 		if (this.ccmpMirror) delete R.mirrors[this.ccmpSid];
-		else if (R.ready && R.isHost && this.ccmpSid && !this.ccmpGone){this.ccmpGone=1;fx({k:'gone',sid:this.ccmpSid});}
+		else if (R.ready && R.isHost && this.ccmpSid && !this.ccmpGone){
+			this.ccmpGone=1;
+			if (!this.popped) rememberGone(this);
+			fx({k:'gone',sid:this.ccmpSid});
+		}
 		return r;
 	};
 }
@@ -1652,7 +1656,7 @@ function onFx(key,m){
 		return;
 	}
 	if (m.k==='spawn') makeMirror(m);
-	else if (m.k==='gone') removeMirror(m.sid);
+	else if (m.k==='gone'){var gs=m.sid;later(function(){removeMirror(gs);},POP_GRACE-1000);}
 	else if (m.k==='popped'){
 		if (m.by===PID && m.force!=='cookie storm drop') stat(m.type==='golden'?'golden':m.type==='reindeer'?'reindeer':'shimmers',1);
 		removeMirror(m.sid);
@@ -1667,12 +1671,50 @@ function onFx(key,m){
 	}
 	else if (m.k==='late' && m.to===PID) sys('Too slow! That one was already gone.');
 }
+/* A click from another player needs a moment to reach the ★ player. A golden cookie, turkey,
+   reindeer... that ran out on the ★ screen in that moment (turkeys leave the instant they touch
+   the edge) still counts if nobody caught it and the click comes within a few seconds. */
+var POP_GRACE=4000;
+function rememberGone(sh){
+	var now=Date.now(); R.goneSh=R.goneSh||{};
+	for (var k in R.goneSh) if (now-R.goneSh[k].at>POP_GRACE*3) delete R.goneSh[k];
+	R.goneSh[sh.ccmpSid]={at:now,sid:sh.ccmpSid,type:sh.type,force:sh.force||'',wrath:sh.wrath?1:0,noCount:sh.noCount?1:0,lead:sh.spawnLead?1:0,pr:shimmerProps(sh)};
+}
+function reviveShimmer(g){
+	if (!Game.shimmerTypes[g.type] || ascending()) return null;
+	var Snd=window.PlaySound, sh;
+	window.PlaySound=function(){}; // no spawn sound
+	R.mirroring++;
+	try{sh=new Game.shimmer(g.type,{type:g.force||undefined,wrath:g.wrath,noWrath:!g.wrath},g.noCount);}
+	catch(e){return null;}
+	finally{R.mirroring--;window.PlaySound=Snd;}
+	if (Game.shimmers.indexOf(sh)===-1) return null; // its type won't appear any more (the season ended...)
+	for (var k in g.pr) sh[k]=g.pr[k];
+	sh.force=g.force; sh.wrath=g.wrath; sh.ccmpSid=g.sid; sh.ccmpGone=1; sh.ccmpRevived=g;
+	sh.l.style.display='none';
+	return sh;
+}
+// pop a shimmer that already ran out: counted as caught instead of missed, spawn timers left alone
+function popRevived(sh){
+	var g=sh.ccmpRevived, T=Game.shimmerTypes[sh.type], keep={time:T.time,spawned:T.spawned,minTime:T.minTime,maxTime:T.maxTime};
+	sh.spawnLead=g.lead;
+	if (g.lead && sh.type==='golden' && Game.missedGoldenClicks>0) Game.missedGoldenClicks--;
+	try{sh.pop();}
+	finally{
+		for (var k in keep) T[k]=keep[k];
+		if (Game.shimmers.indexOf(sh)!==-1){sh.spawnLead=0;sh.die();}
+	}
+}
 function hostPop(m){
 	var sh=null;
 	for (var i=0;i<Game.shimmers.length;i++){if(Game.shimmers[i].ccmpSid===m.sid){sh=Game.shimmers[i];break;}}
+	if (!sh){
+		var g=R.goneSh&&R.goneSh[m.sid];
+		if (g && Date.now()-g.at<POP_GRACE){delete R.goneSh[m.sid];sh=reviveShimmer(g);}
+	}
 	if (!sh || sh.popped){fx({k:'late',sid:m.sid,to:m.by});return;}
 	R.popBy=m.by; R.popName=m.name;
-	try{withPatch(function(){sh.pop();});} // the buff / cookies go to everyone
+	try{withPatch(function(){if(sh.ccmpRevived)popRevived(sh);else sh.pop();});} // the buff / cookies go to everyone
 	catch(e){console.error('[rooms] pop',e);}
 	finally{R.popBy=null;R.popName=null;}
 	if (m.by!==PID && (sh.force!=='cookie storm drop')) feedLine(who({p:m.by,n_:m.name})+' caught '+(sh.type==='golden'?'a golden cookie':'a '+sh.type)+'!','sys');
