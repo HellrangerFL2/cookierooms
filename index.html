@@ -211,7 +211,7 @@ window.CCMP_SETTINGS = {
    ==================================================================== */
 var later = window.setTimeout.bind(window); // our own timers, never recorded as a player's action
 // version of this page: goes up by one with every update
-var CCMP_VERSION = 20;
+var CCMP_VERSION = 21;
 var SET = window.CCMP_SETTINGS;
 var $ = function(id){return document.getElementById(id);};
 var sleep = function(ms){return new Promise(function(r){later(r,ms);});};
@@ -276,6 +276,22 @@ FirebaseBackend.prototype={
 	olderThan:function(p,t){return this.db.ref(p).orderByChild('t').endAt(t).get().then(function(s){var k=[];s.forEach(function(c){k.push(c.key);});return k;});}
 };
 
+// what Firebase stores: no nulls, no empty objects or arrays (the local test mode does the same,
+// so it behaves like the real server)
+function fbClean(v){
+	if (v===null || v===undefined) return undefined;
+	if (Array.isArray(v)){
+		var a=v.map(function(x){var c=fbClean(x);return c===undefined?null:c;});
+		while (a.length && a[a.length-1]===null) a.pop();
+		return a.length?a:undefined;
+	}
+	if (typeof v==='object'){
+		var o={},n=0;
+		for (var k in v){var c=fbClean(v[k]);if(c!==undefined){o[k]=c;n++;}}
+		return n?o:undefined;
+	}
+	return v;
+}
 function LocalBackend(){
 	this.kind='local';
 	this.key='ccmp-local-db';
@@ -293,7 +309,7 @@ LocalBackend.prototype={
 	_root:function(){try{return JSON.parse(localStorage.getItem(this.key)||'{}');}catch(e){return {};}},
 	_save:function(r){try{localStorage.setItem(this.key,JSON.stringify(r));}catch(e){console.warn('local db full',e);} if(this.ch)this.ch.postMessage(1); var self=this;later(function(){self._fire();},0);},
 	_at:function(r,p){var parts=p.split('/').filter(Boolean),o=r;for(var i=0;i<parts.length;i++){if(o==null||typeof o!=='object')return null;o=o[parts[i]];}return o===undefined?null:o;},
-	_put:function(r,p,v){var parts=p.split('/').filter(Boolean),o=r;for(var i=0;i<parts.length-1;i++){if(typeof o[parts[i]]!=='object'||o[parts[i]]===null)o[parts[i]]={};o=o[parts[i]];}if(v===null||v===undefined)delete o[parts[parts.length-1]];else o[parts[parts.length-1]]=JSON.parse(JSON.stringify(v));},
+	_put:function(r,p,v){var parts=p.split('/').filter(Boolean),o=r;for(var i=0;i<parts.length-1;i++){if(typeof o[parts[i]]!=='object'||o[parts[i]]===null)o[parts[i]]={};o=o[parts[i]];}v=v===undefined?undefined:fbClean(JSON.parse(JSON.stringify(v)));if(v===null||v===undefined)delete o[parts[parts.length-1]];else o[parts[parts.length-1]]=v;},
 	get:function(p){return Promise.resolve(this._at(this._root(),p));},
 	set:function(p,v){var r=this._root();this._put(r,p,v);this._save(r);return Promise.resolve();},
 	update:function(p,v){var r=this._root();for(var k in v)this._put(r,p+'/'+k,v[k]);this._save(r);return Promise.resolve();},
@@ -910,7 +926,7 @@ function applyAction(a){
 				break;
 			case 'x':
 				if (asc) break;
-				applyPatch(a.x);
+				applyPatch(typeof a.x==='string'?JSON.parse(a.x):a.x);
 				break;
 			case 'asc':
 				if (!asc){Game.ClosePrompt();Game.Ascend(1);}
@@ -1285,7 +1301,7 @@ function sendPatch(p){
 	if (p.full) markDirty();
 	if (!p.n) return;
 	delete p.full; delete p.n;
-	send({k:'x',x:p});
+	send({k:'x',x:JSON.stringify(p)}); // as text: Firebase would drop every null in it (an emptied potion slot, a cleared value...)
 }
 function withPatch(fn){
 	// nested calls, or a player input already being recorded: the outer recording catches it
