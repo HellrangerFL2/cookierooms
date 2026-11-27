@@ -216,7 +216,7 @@ window.CCMP_SETTINGS = {
    ==================================================================== */
 var later = window.setTimeout.bind(window); // our own timers, never recorded as a player's action
 // version of this page: goes up by one with every update
-var CCMP_VERSION = 22;
+var CCMP_VERSION = 23;
 var SET = window.CCMP_SETTINGS;
 var $ = function(id){return document.getElementById(id);};
 var sleep = function(ms){return new Promise(function(r){later(r,ms);});};
@@ -731,9 +731,11 @@ function applySave(save){
 	var farmM=Game.Objects['Farm']&&Game.Objects['Farm'].minigame, keepSeed=farmM?farmM.seedSelected:null;
 	Game.Notify=function(){}; Game.killShimmers=function(){};
 	R.remote++;
+	var wonBefore=[]; for (var an in Game.Achievements) if (Game.Achievements[an].won) wonBefore.push(an);
 	try{ Game.LoadSave(patchLastDate(save.data),true); }
 	catch(e){ console.error('[rooms] load failed',e); }
 	finally{ R.remote--; Game.Notify=N; Game.killShimmers=K; }
+	keepAchievements(wonBefore);
 	if (timers) shimmerTimers(timers);
 	try{
 		Game.T=Math.max(Game.T,keepT); Game.realT=Math.max(Game.realT,keepRT);
@@ -763,6 +765,16 @@ function applySave(save){
 	if (R.resyncing){R.resyncing=false;sys('Resynced.');try{Game.Notify('Resynced','Your bakery now matches the &#9733; player.','',3);}catch(e){}}
 }
 
+// an achievement is never lost: one this screen already had stays won after loading the room's save
+// (mods like JNE hand some out on their own; losing it on every reload made them pop up again and again)
+function keepAchievements(names){
+	if (ascending()) return;
+	var back=0;
+	names.forEach(function(n){var a=Game.Achievements[n];if(a&&!a.won){a.won=1;back++;}});
+	if (!back) return;
+	var own=0; for (var n in Game.Achievements){var a=Game.Achievements[n];if(a.won&&Game.CountsAsAchievementOwned(a.pool))own++;}
+	Game.AchievementsOwned=own; Game.recalculateGains=1;
+}
 async function publishSave(force,why){
 	if (!R || ascending()) return;
 	sendClicks();
@@ -1011,6 +1023,13 @@ function installHooks(){
 	installWrinklerSync();
 	installDelayedCapture();
 	installAchievementHints();
+	var ow=Game.Win;
+	Game.Win=function(what){
+		var a=typeof what==='string'&&Game.Achievements[what];
+		if (!a || a.won || !R.ready || R.loading || R.remote || R.win || R.pd || R.capD || ascending()) return ow.apply(this,arguments);
+		var self=this,args=arguments;
+		return withPatch(function(){return ow.apply(self,args);}); // won by the game itself (a timer, a mod): tell the room
+	};
 	if (Game.loseShimmeringVeil){
 		var lsv=Game.loseShimmeringVeil;
 		Game.loseShimmeringVeil=function(){
