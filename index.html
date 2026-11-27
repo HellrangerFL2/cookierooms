@@ -157,6 +157,11 @@ window.CCMP_SETTINGS = {
 #ccmp-cursors .hvd{clear:both;padding-top:3px;opacity:.85;}
 #ccmp-cursors .hvd q{display:none;}
 #ccmp-cursors .crateol{position:absolute;left:0;top:0;border:3px solid;border-radius:6px;transition:transform .12s linear;}
+#ccmp-cursors .curhint{position:absolute;left:0;top:0;width:22px;height:22px;transition:transform .15s linear;}
+#ccmp-cursors .curhint svg{display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.8));animation:ccmphint 1.2s ease-in-out infinite;}
+#ccmp-cursors .curhint span{position:absolute;left:26px;top:3px;padding:1px 5px;border-radius:3px;font:bold 11px Tahoma,Verdana,sans-serif;color:#1a0d04;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.6);}
+#ccmp-cursors .curhint span.left{left:auto;right:26px;}
+@keyframes ccmphint{0%,100%{opacity:1}50%{opacity:.55}}
 #ccmp-cursors .mk{position:absolute;left:0;top:0;}
 #ccmp-cursors .mkr{position:absolute;left:-16px;top:-16px;width:26px;height:26px;border:3px solid;border-radius:50%;animation:ccmpmk 1s ease-out infinite;}
 #ccmp-cursors .mkb{position:absolute;left:-3px;top:-3px;border:3px solid;border-radius:6px;animation:ccmpmkb 1s ease-in-out infinite;}
@@ -211,7 +216,7 @@ window.CCMP_SETTINGS = {
    ==================================================================== */
 var later = window.setTimeout.bind(window); // our own timers, never recorded as a player's action
 // version of this page: goes up by one with every update
-var CCMP_VERSION = 21;
+var CCMP_VERSION = 22;
 var SET = window.CCMP_SETTINGS;
 var $ = function(id){return document.getElementById(id);};
 var sleep = function(ms){return new Promise(function(r){later(r,ms);});};
@@ -2114,6 +2119,11 @@ function cursorPos(x,y,target){
 		p.e=n.id; p.ex=Math.round((x-r.left)/r.width*1000)/1000; p.ey=Math.round((y-r.top)/r.height*1000)/1000;
 		break;
 	}
+	p.mn=Game.onMenu||'';
+	if (el && el.closest){
+		if (el.closest('#menu')) p.in='m';
+		else {var rs=el.closest('[id^="rowSpecial"]');if(rs){var rn=parseInt(rs.id.slice(10),10);if(!isNaN(rn))p.in='g'+rn;}}
+	}
 	var f=areaPos(x,y,el);
 	p.a=f.a; p.c=f.c; p.x=Math.round(f.x*10000)/10000; p.y=f.c?Math.round(f.y*10)/10:Math.round(f.y*10000)/10000;
 	return p;
@@ -2121,10 +2131,10 @@ function cursorPos(x,y,target){
 // where a point really shows up: a scrolling part around it hides it once scrolled away; a part
 // that just cuts off its content (the upgrade box when it isn't opened up) holds it at its edge
 function clipAt(el,x,y){
-	var v=true, cut=false;
+	var v=true, cut=false, sc=null;
 	for (var n=el.parentElement;n&&n!==document.body;n=n.parentElement){
 		var r=null;
-		if (scrolls(n)){r=n.getBoundingClientRect();if(y<r.top-2||y>r.bottom+2)v=false;continue;}
+		if (scrolls(n)){r=n.getBoundingClientRect();if(y<r.top-2||y>r.bottom+2){v=false;sc=r;}continue;}
 		var cs=getComputedStyle(n);
 		if (cs.overflowX==='visible' && cs.overflowY==='visible') continue;
 		r=n.getBoundingClientRect(); if (!r.width||!r.height) continue;
@@ -2132,7 +2142,7 @@ function clipAt(el,x,y){
 			x=Math.min(r.right-6,Math.max(r.left+6,x)); y=Math.min(r.bottom-6,Math.max(r.top+6,y)); cut=true;
 		}
 	}
-	return {x:x,y:y,v:v,cut:cut};
+	return {x:x,y:y,v:v,cut:cut,sc:sc};
 }
 // store upgrades are numbered by their place in the store, which can differ between screens,
 // so the upgrade itself is sent and its crate looked up here
@@ -2160,7 +2170,7 @@ function cursorScreen(m){
 	if (!el) return {x:m.x*innerWidth,y:m.y*innerHeight,v:true};
 	var r=el.getBoundingClientRect();
 	if (!r.width || !r.height) return null; // that part isn't shown here
-	if (m.c){var y=r.top+m.y-el.scrollTop;return {x:r.left+m.x*r.width,y:y,v:y>=r.top-2&&y<=r.bottom+2};}
+	if (m.c){var y=r.top+m.y-el.scrollTop,vis=y>=r.top-2&&y<=r.bottom+2;return {x:r.left+m.x*r.width,y:y,v:vis,sc:vis?null:r};}
 	return {x:r.left+m.x*r.width,y:r.top+m.y*r.height,v:true};
 }
 // what's under the mouse now (the store is rebuilt often, which swaps the element out under a still mouse)
@@ -2181,6 +2191,7 @@ function startCursors(){
 	window.addEventListener('blur',hide);
 	setInterval(function(){
 		if (R.mouse.x>=0 && R.mouse.t && !R.mouse.t.isConnected) moved=true; // the store changed under the mouse
+		if ((Game.onMenu||'')!==R.lastMenu){R.lastMenu=Game.onMenu||'';if(R.mouse.x>=0)moved=true;}
 		if (!moved || R.mouse.x<0) return;
 		moved=false; gone=false;
 		var t=underMouse(), p=cursorPos(R.mouse.x,R.mouse.y,t), u=crateUpgrade(t);
@@ -2218,14 +2229,51 @@ function upgradeCard(uid,color){
 		'<div class="hvt"><b>'+(u.dname||u.name)+'</b>'+(u.bought?'':'<i style="color:'+(ok?'#6f6':'#f66')+'">'+Beautify(price)+'</i>')+'</div>'+
 		(desc?'<div class="hvd">'+desc+'</div>':'')+'</div>';
 }
+/* A player in a part of the game that isn't open here (a menu, a minigame panel), or scrolled away:
+   an arrow at the edge points to where they are (or to the button that opens that part). */
+var MENU_BTN={stats:'statsButton',prefs:'prefsButton',log:'logButton'}, MENU_NAME={stats:'Stats',prefs:'Options',log:'Info'};
+function cursorPlace(m){
+	if (m.in==='m' && MENU_BTN[m.mn] && (Game.onMenu||'')!==m.mn) return {btn:MENU_BTN[m.mn],label:'in '+MENU_NAME[m.mn]};
+	if (m.in && m.in.charAt(0)==='g'){
+		var b=Game.ObjectsById[+m.in.slice(1)];
+		if (b && !b.onMinigame) return {btn:'productMinigameButton'+b.id,label:'in '+(b.minigameName||b.dname||b.name)};
+	}
+	// they're at the buildings while a menu covers them here
+	if (!m.mn && Game.onMenu && MENU_BTN[Game.onMenu] && m.in!=='m' && (m.a==='rows'||/^(row|rowCanvas|mutedProduct)\d/.test(m.e||'')))
+		return {btn:MENU_BTN[Game.onMenu],label:'at the buildings'};
+	return null;
+}
+function hintAt(tx,ty,box,label){
+	var pad=18, inside=tx>=box.left+pad&&tx<=box.right-pad&&ty>=box.top+pad&&ty<=box.bottom-pad, hx, hy;
+	if (inside){hx=tx;hy=Math.min(innerHeight-pad,ty+34);if(hy-ty<20)hy=ty-34;} // next to a button that's in view
+	else {hx=Math.min(box.right-pad,Math.max(box.left+pad,tx));hy=Math.min(box.bottom-pad,Math.max(box.top+pad,ty));}
+	hx=Math.min(innerWidth-pad,Math.max(pad,hx)); hy=Math.min(innerHeight-pad,Math.max(pad,hy));
+	return {x:hx,y:hy,a:Math.atan2(ty-hy,tx-hx)*180/Math.PI,label:label||''};
+}
+function cursorHint(m,p){
+	var place=cursorPlace(m), vb={left:0,top:0,right:innerWidth,bottom:innerHeight};
+	if (place){
+		var be=$(place.btn); if (!be) return null;
+		var r=be.getBoundingClientRect(); if (!r.width || !r.height) return null;
+		var tx=r.left+r.width/2, ty=r.top+r.height/2, c=clipAt(be,tx,ty);
+		return hintAt(tx,ty,c.sc||vb,place.label);
+	}
+	if (!p) return null;
+	if (!p.v && p.sc) return hintAt(p.x,p.y,p.sc,'');
+	if (p.x<0||p.y<0||p.x>innerWidth||p.y>innerHeight) return hintAt(p.x,p.y,vb,'');
+	return null;
+}
 function renderCursors(){
 	if (!R || !R.curEls) return;
+	R.hintEls=R.hintEls||{};
 	var box=overlayBox();
-	var now=DB.now(), all=R.cursors||{}, seen={};
+	var now=DB.now(), all=R.cursors||{}, seen={}, seenH={};
 	for (var id in all){
 		var m=all[id];
 		if (id===PID || !m || m.h || now-m.t>15000 || !(R.players||{})[id]) continue;
-		var p=cursorScreen(m); if (!p || !p.v) continue;
+		var p=cursorPlace(m)?null:cursorScreen(m), hint=cursorHint(m,p);
+		if (hint){showHint(box,id,m,hint);seenH[id]=1;continue;}
+		if (!p || !p.v) continue;
 		seen[id]=1;
 		var el=R.curEls[id], c=colorFor(id);
 		if (!el){
@@ -2249,6 +2297,21 @@ function renderCursors(){
 		el.style.transform='translate('+Math.round(p.x)+'px,'+Math.round(p.y)+'px)';
 	}
 	for (var k in R.curEls) if (!seen[k]){R.curEls[k].style.display='none';R.curEls[k]._ol.style.display='none';}
+	for (var h in R.hintEls) if (!seenH[h]) R.hintEls[h].style.display='none';
+}
+function showHint(box,id,m,h){
+	var el=R.hintEls[id], c=colorFor(id);
+	if (!el){
+		el=document.createElement('div'); el.className='curhint';
+		el.innerHTML='<svg width="22" height="22" viewBox="0 0 22 22"><path d="M3 4 L19 11 L3 18 L7 11 Z" fill="'+c+'" stroke="#1a0d04" stroke-width="1.5" stroke-linejoin="round"/></svg><span style="background:'+c+'"></span>';
+		box.appendChild(el); R.hintEls[id]=el;
+	}
+	var nm=(m.n||(R.players[id]&&R.players[id].name)||'?')+(h.label?' \u00b7 '+h.label:''), sp=el.querySelector('span');
+	if (sp.textContent!==nm) sp.textContent=nm;
+	el.querySelector('svg').style.transform='rotate('+Math.round(h.a)+'deg)';
+	sp.className=h.x>innerWidth-180?'left':'';
+	el.style.display='';
+	el.style.transform='translate('+Math.round(h.x-11)+'px,'+Math.round(h.y-11)+'px)';
 }
 
 /* G: put a mark where your mouse is (on an upgrade, that upgrade). Everyone sees it for 10 seconds. */
