@@ -125,6 +125,8 @@ window.CCMP_SETTINGS = {
 #ccmp-panel .hd b{font-family:Consolas,monospace;letter-spacing:2px;color:#ffd9a0;font-size:13px;}
 #ccmp-panel .hd .sp{flex:1;}
 #ccmp-panel .hd .tog{color:#b8946a;}
+#ccmp-panel .hd .ver{color:#8a6e4e;font-size:10px;}
+#ccmp-panel .oldver{color:#ff9b7a;font-size:10px;cursor:help;}
 #ccmp-panel .bd{padding:6px 8px;}
 #ccmp-panel.min .bd{display:none;}
 #ccmp-panel .pl{margin-bottom:6px;}
@@ -208,6 +210,8 @@ window.CCMP_SETTINGS = {
    Utilities
    ==================================================================== */
 var later = window.setTimeout.bind(window); // our own timers, never recorded as a player's action
+// version of this page: goes up by one with every update
+var CCMP_VERSION = 20;
 var SET = window.CCMP_SETTINGS;
 var $ = function(id){return document.getElementById(id);};
 var sleep = function(ms){return new Promise(function(r){later(r,ms);});};
@@ -324,8 +328,8 @@ var hashCode=(location.hash||'').replace('#','').toUpperCase().replace(/[^A-Z0-9
 if (hashCode) codeInput.value=hashCode;
 
 $('ccmp-status').innerHTML = DB.kind==='firebase'
-	? 'Server: <b class="ok">online rooms (Firebase)</b>'
-	: 'Server: <b class="warn">local test mode</b> &ndash; no Firebase config yet, so rooms only work between tabs of this browser. Add your Firebase config at the top of index.html to play with friends.';
+	? 'Cookie Clicker Rooms <b>v'+CCMP_VERSION+'</b><br>Server: <b class="ok">online rooms (Firebase)</b>'
+	: 'Cookie Clicker Rooms <b>v'+CCMP_VERSION+'</b><br>Server: <b class="warn">local test mode</b> &ndash; no Firebase config yet, so rooms only work between tabs of this browser. Add your Firebase config at the top of index.html to play with friends.';
 $('ccmp-status').innerHTML += '<br>Game files: '+(window.CCMP_FILES
 	? '<b class="ok">from this site</b> (Cookie Clicker '+esc(window.CCMP_FILES.version||'?')+', JNE '+esc(window.CCMP_FILES.jne||'?')+', updated '+esc(String(window.CCMP_FILES.built||'').slice(0,10))+')'
 	: '<b class="warn">from dashnet.org and jsDelivr</b> &ndash; the build workflow hasn\'t made a copy on this site yet, so this won\'t work where those sites are blocked.');
@@ -544,10 +548,10 @@ async function enterRoom(code,roomName,playerName,fresh,prof){
 
 	// presence
 	var me=P('players/'+PID);
-	await DB.set(me,{name:playerName,t:DB.now(),joined:DB.now(),v:!document.hidden,hs:document.hidden?DB.now():0,ef:R.effort,prof:R.prof||''});
+	await DB.set(me,{name:playerName,t:DB.now(),joined:DB.now(),v:!document.hidden,hs:document.hidden?DB.now():0,ef:R.effort,prof:R.prof||'',ver:CCMP_VERSION});
 	DB.onDisconnectRemove(me);
 	R.hiddenSince=document.hidden?DB.now():0;
-	var presence=function(){return {t:DB.now(),name:playerName,v:!document.hidden,hs:R.hiddenSince||0,ef:R.effort,prof:R.prof||''};};
+	var presence=function(){return {t:DB.now(),name:playerName,v:!document.hidden,hs:R.hiddenSince||0,ef:R.effort,prof:R.prof||'',ver:CCMP_VERSION};};
 	R.presence=function(){if(!R.leaving)DB.update(me,presence());};
 	setInterval(function(){if(!R.leaving)DB.update(me,presence());},10000);
 	document.addEventListener('visibilitychange',function(){
@@ -1126,7 +1130,11 @@ function alcLoad(api,str){
    is rolled there. Either way the reagent is sent to everyone right away. */
 var ALC_ROOM={wrinkler:1,reindeer:1,lump:1,season:1,dragon_aura:1,pantheon:1,random:1,soil_change:1,broker:1};
 function installPotionsSync(){
-	var PM=window.PotionsM; if (!PM || typeof PM._addReagent!=='function' || PM._addReagent.ccmp) return;
+	var PM=window.PotionsM; if (!PM || typeof PM._addReagent!=='function') return;
+	// JNE only switches reagent drops on when it hooks into the Grimoire, so without a levelled
+	// Wizard tower nothing ever drops (in single player too). Switch them on once the room is loaded.
+	if (!Game._potionsGrimoireReady && R && R.ready && !R.loading) Game._potionsGrimoireReady=true;
+	if (PM._addReagent.ccmp) return;
 	var orig=PM._addReagent;
 	PM._addReagent=function(id,amount,source){
 		var self=this,args=arguments;
@@ -2335,7 +2343,7 @@ function buildPanel(){
 	d.id='ccmp-panel';
 	if (lsGet('ccmp-panel-min')==='1') d.className='min';
 	d.innerHTML=
-		'<div class="hd" id="ccmp-hd"><span>Room</span><b>'+esc(R.code)+'</b><span class="sp"></span><span id="ccmp-count"></span><span class="tog">&#9662;</span></div>'+
+		'<div class="hd" id="ccmp-hd"><span>Room</span><b>'+esc(R.code)+'</b><span class="ver">v'+CCMP_VERSION+'</span><span class="sp"></span><span id="ccmp-count"></span><span class="tog">&#9662;</span></div>'+
 		'<div class="bd">'+
 			'<div class="pl" id="ccmp-players"></div>'+
 			'<div class="feed" id="ccmp-feed"></div>'+
@@ -2387,7 +2395,14 @@ function renderPlayers(){
 	var p=R.players||{},now=DB.now(),h='',n=0;
 	Object.keys(p).sort(function(a,b){return (p[a].joined||0)-(p[b].joined||0);}).forEach(function(id){
 		var x=p[id];if(!x||now-x.t>60000)return;n++;
-		h+='<div><span class="dot" style="background:'+colorFor(id)+'"></span>'+esc(x.name)+(id===PID?' (you)':'')+(id===R.hostPid?' <span title="keeps the room saved on the server">&#9733;</span>':'')+'</div>';
+		var ver=+x.ver||0, other=ver!==CCMP_VERSION;
+		h+='<div><span class="dot" style="background:'+colorFor(id)+'"></span>'+esc(x.name)+(id===PID?' (you)':'')+(id===R.hostPid?' <span title="keeps the room saved on the server">&#9733;</span>':'')+
+			(other?' <span class="oldver" title="'+(ver<CCMP_VERSION?'Playing an older version of this page. They should reload with Ctrl+F5.':'Playing a newer version of this page. Reload with Ctrl+F5 to get it.')+'">v'+(ver||'?')+'</span>':'')+'</div>';
+		if (ver>CCMP_VERSION && !R.newerSeen){
+			R.newerSeen=true;
+			sys('<b>'+esc(x.name)+'</b> is on a newer version of this page (v'+ver+', you have v'+CCMP_VERSION+'). Reload with <b>Ctrl+F5</b> to get it.');
+			try{Game.Notify('Newer version available','Reload with Ctrl+F5 to get v'+ver+'.','',8);}catch(e){}
+		}
 	});
 	el.innerHTML=h;
 	$('ccmp-count').textContent=n+' online';
